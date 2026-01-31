@@ -8,6 +8,7 @@ resource "kubernetes_namespace_v1" "nims" {
 
 
 resource "kubernetes_secret_v1" "nvcrio-cred" {
+  depends_on = [kubernetes_namespace_v1.nims]
   metadata {
     name      = "nvcrio-cred"
     namespace = var.namespace
@@ -30,6 +31,7 @@ resource "kubernetes_secret_v1" "nvcrio-cred" {
 
 
 resource "kubernetes_secret_v1" "ngc_api_key" {
+  depends_on = [kubernetes_namespace_v1.nims]
   metadata {
     name      = "ngc-api-key"
     namespace = var.namespace
@@ -45,6 +47,7 @@ resource "kubernetes_secret_v1" "ngc_api_key" {
 
 
 resource "kubernetes_service_v1" "openfold3_lb" {
+  depends_on = [kubernetes_namespace_v1.nims]
   metadata {
     name      = "nims"
     namespace = var.namespace
