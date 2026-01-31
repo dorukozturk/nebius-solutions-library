@@ -20,6 +20,14 @@ resource "helm_release" "gpu-operator" {
     {
       name  = "driver.version"
       value = var.driver_version
+    },
+    {
+      name  = "driver.rdma.enabled"
+      value = true
+    },
+    {
+      name  = "driver.rdma.useHostMofed"
+      value = true
     }
   ]
 
