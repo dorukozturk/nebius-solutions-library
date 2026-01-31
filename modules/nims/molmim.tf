@@ -69,7 +69,7 @@ resource "kubernetes_deployment_v1" "molmim" {
           }
           volume_mount {
             name       = "mnt-data"
-            mount_path = "/home/nvs/.cache"
+            mount_path = "/opt/nim/.cache"
           }
         }
 
