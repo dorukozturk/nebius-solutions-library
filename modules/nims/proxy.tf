@@ -143,17 +143,6 @@ resource "kubernetes_config_map_v1" "nginx_tcp_proxy" {
           proxy_connect_timeout 10s;
         }
 
-        # Port 8011 -> cosmos-reason1-7b
-        upstream cosmos_reason1_7b {
-          server cosmos-reason1-7b-svc.${var.namespace}.svc.cluster.local:8000;
-        }
-        server {
-          listen 8011;
-          proxy_pass cosmos_reason1_7b;
-          proxy_timeout 600s;
-          proxy_connect_timeout 10s;
-        }
-
         # Port 8080 -> metadata-service
         upstream metadata {
           server metadata-service-svc.${var.namespace}.svc.cluster.local:8080;
@@ -209,7 +198,7 @@ resource "kubernetes_deployment_v1" "nginx_tcp_proxy" {
           }
 
           dynamic "port" {
-            for_each = concat(range(8000, 8012), [8080])
+            for_each = concat(range(8000, 8011), [8080])
             content {
               container_port = port.value
             }
@@ -322,13 +311,6 @@ resource "kubernetes_service_v1" "nims_lb" {
       name        = "rfdiffusion"
       port        = 8010
       target_port = 8010
-      protocol    = "TCP"
-    }
-
-    port {
-      name        = "cosmos-reason1-7b"
-      port        = 8011
-      target_port = 8011
       protocol    = "TCP"
     }
 

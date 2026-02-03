@@ -33,6 +33,12 @@ The module exposes NIMs using a shared LoadBalancer per group. The demo UI expec
 - **ProteinMPNN** → `8009` *(if enabled in this module)*
 - **RFdiffusion** → `8010` *(if enabled in this module)*
 
+### Cosmos / World Foundation Models (Separate LB)
+- **Cosmos-Reason1-7B** → `8000`
+- **Cosmos-Reason2-8B** → `8001`
+- **Cosmos-Reason2-2B** → `8002`
+- **Cosmos-Embed1** → `8003`
+
 ### BioNeMo (Separate LB)
 - Deployed via `bionemo.tf` (ports and services defined there).
 
@@ -80,10 +86,25 @@ The module exposes NIMs using a shared LoadBalancer per group. The demo UI expec
 - `rfdiffusion.tf`  
   Deploys RFdiffusion (generative backbone design).
 
-- `qwen3-next-80b-a3b-instruct.tf`  
+- `qwen3-next-80b-a3b-instruct.tf`
   Deploys Qwen3 (LLM copilot for workflow adoption).
 
-- `bionemo.tf`  
+- `cosmos-reason1-7b.tf`
+  Deploys Cosmos-Reason1-7B (world foundation model for physical AI reasoning).
+
+- `cosmos-reason2-8b.tf`
+  Deploys Cosmos-Reason2-8B (world foundation model for physical AI reasoning, 8B parameters).
+
+- `cosmos-reason2-2b.tf`
+  Deploys Cosmos-Reason2-2B (world foundation model for physical AI reasoning, 2B parameters).
+
+- `cosmos-embed1.tf`
+  Deploys Cosmos-Embed1 (world foundation model for embeddings).
+
+- `cosmos-proxy.tf`
+  Nginx TCP proxy and LoadBalancer for Cosmos World Foundation Models (separate external IP).
+
+- `bionemo.tf`
   Deploys BioNeMo NIMs on a separate LoadBalancer.
 
 ---
@@ -122,18 +143,32 @@ module "nims" {
   ngc_key   = "REPLACE_WITH_YOUR_NGC_KEY"
   parent_id = var.parent_id
 
-  openfold2 = true
-  openfold3 = true
-  boltz2    = true
-  genmol    = true
+  # Protein structure prediction
+  openfold2  = true
+  openfold3  = true
+  boltz2     = true
   msa_search = true
-  evo2_40b  = true
 
-  qwen3-next-80b-a3b-instruct = true
-  molmim    = true
-  diffdock  = true
+  # Molecule generation & docking
+  genmol      = true
+  molmim      = true
+  diffdock    = true
   diffdock_replicas = 3
+
+  # Protein design
   proteinmpnn = true
   rfdiffusion = true
+
+  # Sequence models
+  evo2_40b = true
+
+  # LLM copilot
+  qwen3-next-80b-a3b-instruct = true
+
+  # Cosmos World Foundation Models
+  cosmos_reason1_7b = true
+  cosmos_reason2_8b = true
+  cosmos_reason2_2b = true
+  cosmos_embed1     = true
 }
 ```

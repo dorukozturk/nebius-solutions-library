@@ -215,3 +215,57 @@ resource "kubernetes_service_v1" "cosmos_reason1_7b" {
     type = "ClusterIP"
   }
 }
+
+resource "kubernetes_service_v1" "cosmos_reason2_8b" {
+  depends_on = [kubernetes_namespace_v1.nims]
+  metadata {
+    name      = "cosmos-reason2-8b-svc"
+    namespace = var.namespace
+  }
+  spec {
+    selector = {
+      app = "cosmos-reason2-8b"
+    }
+    port {
+      port        = 8000
+      target_port = 8000
+    }
+    type = "ClusterIP"
+  }
+}
+
+resource "kubernetes_service_v1" "cosmos_reason2_2b" {
+  depends_on = [kubernetes_namespace_v1.nims]
+  metadata {
+    name      = "cosmos-reason2-2b-svc"
+    namespace = var.namespace
+  }
+  spec {
+    selector = {
+      app = "cosmos-reason2-2b"
+    }
+    port {
+      port        = 8000
+      target_port = 8000
+    }
+    type = "ClusterIP"
+  }
+}
+
+resource "kubernetes_service_v1" "cosmos_embed1" {
+  depends_on = [kubernetes_namespace_v1.nims]
+  metadata {
+    name      = "cosmos-embed1-svc"
+    namespace = var.namespace
+  }
+  spec {
+    selector = {
+      app = "cosmos-embed1"
+    }
+    port {
+      port        = 8000
+      target_port = 8000
+    }
+    type = "ClusterIP"
+  }
+}

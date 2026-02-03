@@ -249,3 +249,57 @@ variable "cosmos_reason1_7b_replicas" {
   type        = number
   default     = 1
 }
+
+variable "cosmos_reason2_8b" {
+  description = "install cosmos-reason2-8b"
+  type        = bool
+  default     = false
+}
+
+variable "cosmos_reason2_8b_version" {
+  description = "cosmos-reason2-8b version"
+  type        = string
+  default     = "1.6.0"
+}
+
+variable "cosmos_reason2_8b_replicas" {
+  description = "cosmos-reason2-8b instances"
+  type        = number
+  default     = 1
+}
+
+variable "cosmos_reason2_2b" {
+  description = "install cosmos-reason2-2b"
+  type        = bool
+  default     = false
+}
+
+variable "cosmos_reason2_2b_version" {
+  description = "cosmos-reason2-2b version"
+  type        = string
+  default     = "1.6.0"
+}
+
+variable "cosmos_reason2_2b_replicas" {
+  description = "cosmos-reason2-2b instances"
+  type        = number
+  default     = 1
+}
+
+variable "cosmos_embed1" {
+  description = "install cosmos-embed1"
+  type        = bool
+  default     = false
+}
+
+variable "cosmos_embed1_version" {
+  description = "cosmos-embed1 version"
+  type        = string
+  default     = "1.0.0"
+}
+
+variable "cosmos_embed1_replicas" {
+  description = "cosmos-embed1 instances"
+  type        = number
+  default     = 1
+}
