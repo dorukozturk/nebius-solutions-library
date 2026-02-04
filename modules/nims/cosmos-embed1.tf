@@ -45,6 +45,11 @@ resource "kubernetes_deployment_v1" "cosmos_embed1" {
             }
           }
 
+          env {
+            name  = "NVIDIA_DRIVER_CAPABILITIES"
+            value = "all"
+          }
+
           port {
             container_port = 8000
           }
