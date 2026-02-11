@@ -25,7 +25,7 @@ export MIG_MANAGER_ENABLED="false"
 
 # Driverfull images (Nebius pre-installed NVIDIA drivers, skips GPU Operator driver)
 # Recommended for B200/B300 GPUs where the GPU Operator's bundled driver may not support NVSwitch.
-export USE_DRIVERFULL_IMAGES="false"  # Set to "true" to use driverfull images
+export USE_DRIVERFULL_IMAGES="${USE_DRIVERFULL_IMAGES:-}"  # Auto-detected from Terraform; set "true"/"false" to override
 
 # Network Operator (only needed for InfiniBand/GPU clusters without driverfull images)
 export ENABLE_NETWORK_OPERATOR="false"  # Set to "true" if using InfiniBand

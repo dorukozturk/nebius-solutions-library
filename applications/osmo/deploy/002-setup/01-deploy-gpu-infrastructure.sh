@@ -24,6 +24,15 @@ log_info "Adding Helm repositories..."
 helm repo add nvidia https://helm.ngc.nvidia.com/nvidia --force-update
 helm repo update
 
+# Auto-detect driverfull images from Terraform config
+if [[ -z "${USE_DRIVERFULL_IMAGES:-}" ]]; then
+    TF_DRIVERFULL=$(get_tf_output "gpu_nodes_driverfull_image" "../001-iac" || echo "")
+    if [[ "$TF_DRIVERFULL" == "true" ]]; then
+        USE_DRIVERFULL_IMAGES="true"
+        log_info "Auto-detected driverfull images from Terraform"
+    fi
+fi
+
 # -----------------------------------------------------------------------------
 # Deploy GPU Operator (skipped when using driverfull images)
 # -----------------------------------------------------------------------------

@@ -133,6 +133,14 @@ output "wireguard" {
 }
 
 # -----------------------------------------------------------------------------
+# GPU Configuration Outputs
+# -----------------------------------------------------------------------------
+output "gpu_nodes_driverfull_image" {
+  description = "Whether GPU nodes use driverfull images with pre-installed drivers"
+  value       = var.gpu_nodes_driverfull_image
+}
+
+# -----------------------------------------------------------------------------
 # Connection Instructions
 # -----------------------------------------------------------------------------
 output "next_steps" {
