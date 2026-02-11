@@ -72,11 +72,14 @@ cd 002-setup
 # 2. Deploy observability stack
 ./02-deploy-observability.sh
 
-# 3. Deploy OSMO control plane
-./03-deploy-osmo-control-plane.sh
+# 3. Deploy NGINX Ingress Controller
+./03-deploy-nginx-ingress.sh
 
-# 4. Deploy OSMO backend
-./04-deploy-osmo-backend.sh
+# 4. Deploy OSMO control plane
+./04-deploy-osmo-control-plane.sh
+
+# 5. Deploy OSMO backend
+./05-deploy-osmo-backend.sh
 ```
 
 ## Directory Structure
@@ -106,8 +109,9 @@ deploy/
     ├── values/                   # Helm values files
     ├── 01-deploy-gpu-infrastructure.sh
     ├── 02-deploy-observability.sh
-    ├── 03-deploy-osmo-control-plane.sh
-    ├── 04-deploy-osmo-backend.sh
+    ├── 03-deploy-nginx-ingress.sh
+    ├── 04-deploy-osmo-control-plane.sh
+    ├── 05-deploy-osmo-backend.sh
     ├── cleanup/                  # Uninstall scripts
     └── README.md
 ```

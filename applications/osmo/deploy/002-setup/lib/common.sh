@@ -200,6 +200,56 @@ wait_for_pods() {
             --timeout=10s
 }
 
+# Detect OSMO service URL from the NGINX Ingress Controller's LoadBalancer.
+#
+# Lookup order:
+#   1. LoadBalancer external IP   (cloud assigns a public/internal IP)
+#   2. LoadBalancer hostname       (some clouds return a DNS name instead)
+#   3. Controller ClusterIP        (fallback – works from inside the cluster)
+#
+# Usage:
+#   url=$(detect_service_url)
+#   [[ -n "$url" ]] && echo "OSMO reachable at $url"
+detect_service_url() {
+    local ns="${INGRESS_NAMESPACE:-ingress-nginx}"
+    local url=""
+
+    # Find the controller service (works for the community ingress-nginx chart)
+    local lb_ip lb_host cluster_ip svc_name
+    svc_name=$(kubectl get svc -n "$ns" \
+        -l app.kubernetes.io/name=ingress-nginx,app.kubernetes.io/component=controller \
+        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+
+    if [[ -n "$svc_name" ]]; then
+        # 1. LoadBalancer IP
+        lb_ip=$(kubectl get svc "$svc_name" -n "$ns" \
+            -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+        if [[ -n "$lb_ip" ]]; then
+            echo "http://${lb_ip}"
+            return 0
+        fi
+
+        # 2. LoadBalancer hostname (e.g. ELB on AWS)
+        lb_host=$(kubectl get svc "$svc_name" -n "$ns" \
+            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+        if [[ -n "$lb_host" ]]; then
+            echo "http://${lb_host}"
+            return 0
+        fi
+
+        # 3. ClusterIP of the controller
+        cluster_ip=$(kubectl get svc "$svc_name" -n "$ns" \
+            -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)
+        if [[ -n "$cluster_ip" && "$cluster_ip" != "None" ]]; then
+            echo "http://${cluster_ip}"
+            return 0
+        fi
+    fi
+
+    # Nothing found
+    return 1
+}
+
 # Get Terraform output (supports nested values like "postgresql.host")
 get_tf_output() {
     local name=$1

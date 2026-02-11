@@ -50,7 +50,7 @@ if [[ -z "${OSMO_SERVICE_URL:-}" ]]; then
             log_success "In-cluster Agent URL: ${OSMO_SERVICE_URL}"
         else
             echo ""
-            log_error "Could not detect OSMO Agent service. Deploy OSMO first: ./03-deploy-osmo-control-plane.sh"
+            log_error "Could not detect OSMO Agent service. Deploy OSMO first: ./04-deploy-osmo-control-plane.sh"
             log_error "Note: Backend operators require osmo-agent service for WebSocket connections"
             exit 1
         fi
@@ -276,14 +276,28 @@ echo ""
 echo "Backend Name: ${BACKEND_NAME}"
 echo "Agent URL (WebSocket): ${OSMO_SERVICE_URL}"
 echo ""
+# Detect Ingress URL for verification instructions
+INGRESS_URL=$(detect_service_url 2>/dev/null || true)
+
 echo "To verify the backend registration:"
 echo ""
-echo "  Terminal 1 - Start port-forward (keep running):"
-echo "    kubectl port-forward -n osmo svc/osmo-service 8080:80"
+if [[ -n "$INGRESS_URL" ]]; then
+    echo "  Check backend status:"
+    echo "    osmo config show BACKEND ${BACKEND_NAME}"
+    echo ""
+    echo "  Or via curl (using NGINX Ingress LoadBalancer):"
+    echo "    curl ${INGRESS_URL}/api/configs/backend"
+else
+    echo "  Terminal 1 - Start port-forward (keep running):"
+    echo "    kubectl port-forward -n osmo svc/osmo-service 8080:80"
+    echo ""
+    echo "  Terminal 2 - Check backend status:"
+    echo "    osmo config show BACKEND ${BACKEND_NAME}"
+    echo ""
+    echo "  Or via curl:"
+    echo "    curl http://localhost:8080/api/configs/backend"
+fi
 echo ""
-echo "  Terminal 2 - Check backend status:"
-echo "    osmo config show BACKEND ${BACKEND_NAME}"
-echo ""
-echo "  Or via curl:"
-echo "    curl http://localhost:8080/api/configs/backend"
+echo "Next step - Configure Storage:"
+echo "  ./06-configure-storage.sh"
 echo ""

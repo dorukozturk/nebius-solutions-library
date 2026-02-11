@@ -849,6 +849,16 @@ fi
 # -----------------------------------------------------------------------------
 log_info "Creating OSMO values file..."
 
+# NGINX Ingress – run 03-deploy-nginx-ingress.sh before this script
+# When OSMO_INGRESS_HOSTNAME is empty (default), ingress matches any Host header,
+# allowing direct IP-based access. Set it to a real domain for host-based routing.
+INGRESS_HOSTNAME="${OSMO_INGRESS_HOSTNAME:-}"
+if [[ -n "$INGRESS_HOSTNAME" ]]; then
+    log_info "Ingress hostname: ${INGRESS_HOSTNAME}"
+else
+    log_info "Ingress hostname: (any — IP-based access)"
+fi
+
 # Create the values file with proper extraEnv and extraVolumes for each service
 # This configures PostgreSQL password via env var and MEK via volume mount
 cat > /tmp/osmo_values.yaml <<EOF
@@ -883,7 +893,15 @@ services:
       minReplicas: 1
       maxReplicas: 1
     ingress:
-      enabled: false
+      enabled: true
+      prefix: /
+      ingressClass: nginx
+      sslEnabled: false
+      annotations:
+        nginx.ingress.kubernetes.io/proxy-buffer-size: "16k"
+        nginx.ingress.kubernetes.io/proxy-buffers: "8 16k"
+        nginx.ingress.kubernetes.io/proxy-busy-buffers-size: "32k"
+        nginx.ingress.kubernetes.io/large-client-header-buffers: "4 16k"
     # Authentication configuration
     # NOTE: Auth is DISABLED because OSMO's internal JWT validation expects
     # tokens signed with its own keys, not Keycloak's keys.
@@ -1068,9 +1086,14 @@ EOF
 # -----------------------------------------------------------------------------
 log_info "Deploying OSMO Service..."
 
+SERVICE_HELM_ARGS=(
+    --namespace "${OSMO_NAMESPACE}"
+    -f /tmp/osmo_values.yaml
+)
+[[ -n "$INGRESS_HOSTNAME" ]] && SERVICE_HELM_ARGS+=(--set "services.service.hostname=${INGRESS_HOSTNAME}")
+
 helm upgrade --install osmo-service osmo/service \
-    --namespace "${OSMO_NAMESPACE}" \
-    -f /tmp/osmo_values.yaml \
+    "${SERVICE_HELM_ARGS[@]}" \
     --wait --timeout 10m || {
     log_warning "OSMO Service deployment had issues"
     log_info "Checking pod status..."
@@ -1078,10 +1101,6 @@ helm upgrade --install osmo-service osmo/service \
 }
 
 log_success "OSMO Service deployed"
-
-# Delete ingress resources (chart creates them with invalid empty hostnames)
-log_info "Cleaning up invalid Ingress resources..."
-kubectl delete ingress -n "${OSMO_NAMESPACE}" -l app.kubernetes.io/instance=osmo-service --ignore-not-found 2>/dev/null || true
 
 log_success "OSMO Service Helm deployment complete"
 
@@ -1097,26 +1116,29 @@ kubectl create secret generic db-secret \
     --from-literal=db-password="${POSTGRES_PASSWORD}" \
     --dry-run=client -o yaml | kubectl apply -f -
 
+ROUTER_HELM_ARGS=(
+    --namespace "${OSMO_NAMESPACE}"
+    --set service.type=ClusterIP
+    --set services.configFile.enabled=true
+    --set "services.postgres.serviceName=${POSTGRES_HOST}"
+    --set "services.postgres.port=${POSTGRES_PORT}"
+    --set services.postgres.db=osmo
+    --set "services.postgres.user=${POSTGRES_USER}"
+    --set services.service.ingress.enabled=true
+    --set services.service.ingress.ingressClass=nginx
+    --set services.service.ingress.sslEnabled=false
+    --set services.service.scaling.minReplicas=1
+    --set services.service.scaling.maxReplicas=1
+    --set sidecars.envoy.enabled=false
+    --set sidecars.logAgent.enabled=false
+)
+[[ -n "$INGRESS_HOSTNAME" ]] && ROUTER_HELM_ARGS+=(--set "services.service.hostname=${INGRESS_HOSTNAME}" --set "global.domain=${INGRESS_HOSTNAME}")
+
 helm upgrade --install osmo-router osmo/router \
-    --namespace "${OSMO_NAMESPACE}" \
-    --set service.type=ClusterIP \
-    --set global.domain=osmo.local \
-    --set services.configFile.enabled=true \
-    --set services.postgres.serviceName="${POSTGRES_HOST}" \
-    --set services.postgres.port=${POSTGRES_PORT} \
-    --set services.postgres.db=osmo \
-    --set services.postgres.user="${POSTGRES_USER}" \
-    --set services.service.ingress.enabled=false \
-    --set services.service.scaling.minReplicas=1 \
-    --set services.service.scaling.maxReplicas=1 \
-    --set sidecars.envoy.enabled=false \
-    --set sidecars.logAgent.enabled=false \
+    "${ROUTER_HELM_ARGS[@]}" \
     --wait --timeout 5m || log_warning "Router deployment had issues"
 
 log_success "OSMO Router deployed"
-
-# Delete router ingress
-kubectl delete ingress -n "${OSMO_NAMESPACE}" -l app.kubernetes.io/instance=osmo-router --ignore-not-found 2>/dev/null || true
 
 # -----------------------------------------------------------------------------
 # Step 8: Deploy Web UI (Optional)
@@ -1124,26 +1146,25 @@ kubectl delete ingress -n "${OSMO_NAMESPACE}" -l app.kubernetes.io/instance=osmo
 if [[ "${DEPLOY_UI:-true}" == "true" ]]; then
     log_info "Deploying OSMO Web UI..."
 
+    UI_HELM_ARGS=(
+        --namespace "${OSMO_NAMESPACE}"
+        --set services.ui.service.type=ClusterIP
+        --set services.ui.ingress.enabled=true
+        --set services.ui.ingress.ingressClass=nginx
+        --set services.ui.ingress.sslEnabled=false
+        --set services.ui.replicas=1
+        --set "services.ui.apiHostname=osmo-service.${OSMO_NAMESPACE}.svc.cluster.local:80"
+        --set sidecars.envoy.enabled=false
+        --set sidecars.logAgent.enabled=false
+    )
+    [[ -n "$INGRESS_HOSTNAME" ]] && UI_HELM_ARGS+=(--set "services.ui.hostname=${INGRESS_HOSTNAME}" --set "global.domain=${INGRESS_HOSTNAME}")
+
     helm upgrade --install osmo-ui osmo/web-ui \
-        --namespace "${OSMO_NAMESPACE}" \
-        --set services.ui.service.type=LoadBalancer \
-        --set global.domain=osmo.local \
-        --set services.ui.ingress.enabled=false \
-        --set services.ui.replicas=1 \
-        --set services.ui.apiHostname="osmo-service.${OSMO_NAMESPACE}.svc.cluster.local:80" \
-        --set sidecars.envoy.enabled=false \
-        --set sidecars.logAgent.enabled=false \
+        "${UI_HELM_ARGS[@]}" \
         --wait --timeout 5m || log_warning "UI deployment had issues"
 
     log_success "OSMO Web UI deployed"
-    
-    # Delete UI ingress
-    kubectl delete ingress -n "${OSMO_NAMESPACE}" -l app.kubernetes.io/instance=osmo-ui --ignore-not-found 2>/dev/null || true
 fi
-
-# Cleanup all remaining ingress resources (final sweep)
-log_info "Final cleanup of any remaining Ingress resources..."
-kubectl delete ingress --all -n "${OSMO_NAMESPACE}" --ignore-not-found 2>/dev/null || true
 
 # Cleanup temp files
 rm -f /tmp/osmo_values.yaml
@@ -1233,24 +1254,7 @@ done
 log_success "Service ports verified"
 
 # -----------------------------------------------------------------------------
-# Step 11: Deploy NGINX Proxy
-# -----------------------------------------------------------------------------
-# The nginx proxy routes traffic to osmo-service, osmo-logger, and osmo-agent
-# Required for osmo-ctrl sidecar to communicate with the OSMO service
-log_info "Deploying OSMO proxy (nginx)..."
-
-if [[ -f "${SCRIPT_DIR}/nginx-proxy.yaml" ]]; then
-    kubectl apply -f "${SCRIPT_DIR}/nginx-proxy.yaml"
-    kubectl rollout status deployment/osmo-proxy -n "${OSMO_NAMESPACE}" --timeout=120s || \
-        log_warning "Timeout waiting for osmo-proxy rollout"
-    log_success "OSMO proxy deployed"
-else
-    log_warning "nginx-proxy.yaml not found - skipping proxy deployment"
-    log_warning "Workflows may fail without the proxy. Create nginx-proxy.yaml and apply manually."
-fi
-
-# -----------------------------------------------------------------------------
-# Step 12: Verify Deployment
+# Step 11: Verify Deployment
 # -----------------------------------------------------------------------------
 echo ""
 log_info "Verifying deployment configuration..."
@@ -1282,26 +1286,129 @@ echo ""
 echo "Services:"
 kubectl get svc -n "${OSMO_NAMESPACE}"
 
-# Get service URL
-OSMO_SVC=$(kubectl get svc -n "${OSMO_NAMESPACE}" -l app.kubernetes.io/name=service -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "osmo-service")
-OSMO_PORT=$(kubectl get svc "${OSMO_SVC}" -n "${OSMO_NAMESPACE}" -o jsonpath='{.spec.ports[0].port}' 2>/dev/null || echo "80")
+# -----------------------------------------------------------------------------
+# Step 12: Configure service_base_url (required for workflow execution)
+# -----------------------------------------------------------------------------
+# The osmo-ctrl sidecar in every workflow pod needs service_base_url to
+# stream logs, report task status, and refresh tokens.
+# This is an application-level config that must be set via the OSMO API.
+
+echo ""
+log_info "Configuring service_base_url for workflow execution..."
+
+# Detect target URL from Ingress
+INGRESS_URL=$(detect_service_url 2>/dev/null || true)
+
+if [[ -n "${OSMO_INGRESS_BASE_URL:-}" ]]; then
+    TARGET_SERVICE_URL="${OSMO_INGRESS_BASE_URL}"
+    log_info "Using explicit Ingress base URL: ${TARGET_SERVICE_URL}"
+elif [[ -n "$INGRESS_URL" ]]; then
+    TARGET_SERVICE_URL="${INGRESS_URL}"
+    log_info "Auto-detected service URL: ${TARGET_SERVICE_URL}"
+else
+    log_warning "Could not detect Ingress URL. Skipping service_base_url configuration."
+    log_warning "Run ./07-configure-service-url.sh manually after verifying the Ingress."
+    TARGET_SERVICE_URL=""
+fi
+
+if [[ -n "$TARGET_SERVICE_URL" ]]; then
+    # Start port-forward to access the OSMO API
+    log_info "Starting port-forward to configure service_base_url..."
+    kubectl port-forward -n "${OSMO_NAMESPACE}" svc/osmo-service 8080:80 &>/dev/null &
+    _PF_PID=$!
+
+    _cleanup_pf() {
+        if [[ -n "${_PF_PID:-}" ]]; then
+            kill $_PF_PID 2>/dev/null || true
+            wait $_PF_PID 2>/dev/null || true
+        fi
+    }
+
+    # Wait for port-forward to be ready
+    _pf_ready=false
+    for i in $(seq 1 30); do
+        if curl -s -o /dev/null -w "%{http_code}" "http://localhost:8080/api/version" 2>/dev/null | grep -q "200\|401\|403"; then
+            _pf_ready=true
+            break
+        fi
+        sleep 1
+    done
+
+    if [[ "$_pf_ready" == "true" ]]; then
+        # Login
+        if osmo login http://localhost:8080 --method dev --username admin 2>/dev/null; then
+            # Check current value
+            CURRENT_SVC_URL=$(curl -s "http://localhost:8080/api/configs/service" 2>/dev/null | jq -r '.service_base_url // ""')
+
+            if [[ "$CURRENT_SVC_URL" == "$TARGET_SERVICE_URL" ]]; then
+                log_success "service_base_url already configured: ${CURRENT_SVC_URL}"
+            else
+                if [[ -n "$CURRENT_SVC_URL" && "$CURRENT_SVC_URL" != "null" ]]; then
+                    log_warning "Updating service_base_url from '${CURRENT_SVC_URL}' to '${TARGET_SERVICE_URL}'"
+                fi
+
+                # Write config
+                cat > /tmp/service_url_fix.json << SVCEOF
+{
+  "service_base_url": "${TARGET_SERVICE_URL}"
+}
+SVCEOF
+                if osmo config update SERVICE --file /tmp/service_url_fix.json --description "Set service_base_url for osmo-ctrl sidecar" 2>/dev/null; then
+                    # Verify
+                    NEW_SVC_URL=$(curl -s "http://localhost:8080/api/configs/service" 2>/dev/null | jq -r '.service_base_url // ""')
+                    if [[ "$NEW_SVC_URL" == "$TARGET_SERVICE_URL" ]]; then
+                        log_success "service_base_url configured: ${NEW_SVC_URL}"
+                    else
+                        log_warning "service_base_url verification failed. Run ./07-configure-service-url.sh manually."
+                    fi
+                else
+                    log_warning "Failed to set service_base_url. Run ./07-configure-service-url.sh manually."
+                fi
+                rm -f /tmp/service_url_fix.json
+            fi
+        else
+            log_warning "Could not login to OSMO. Run ./07-configure-service-url.sh manually."
+        fi
+    else
+        log_warning "Port-forward not ready. Run ./07-configure-service-url.sh manually."
+    fi
+
+    _cleanup_pf
+fi
 
 echo ""
 echo "========================================"
-log_success "OSMO Service deployment complete!"
+log_success "OSMO Control Plane deployment complete!"
 echo "========================================"
 echo ""
-echo "OSMO Service Access:"
-echo "  kubectl port-forward -n ${OSMO_NAMESPACE} svc/${OSMO_SVC} 8080:${OSMO_PORT}"
-echo "  URL: http://localhost:8080"
-echo ""
-echo ""
+
+if [[ -n "$INGRESS_URL" ]]; then
+    echo "OSMO Access (via NGINX Ingress LoadBalancer):"
+    echo "  OSMO API: ${INGRESS_URL}/api/version"
+    echo "  OSMO UI:  ${INGRESS_URL}"
+    echo "  OSMO CLI: osmo login ${INGRESS_URL} --method dev --username admin"
+    echo ""
+else
+    log_warning "Could not detect Ingress LoadBalancer IP."
+    echo "  Check: kubectl get svc -n ${INGRESS_NAMESPACE:-ingress-nginx}"
+    echo ""
+    echo "  Fallback (port-forward):"
+    echo "    kubectl port-forward -n ${OSMO_NAMESPACE} svc/osmo-service 8080:80"
+    echo "    URL: http://localhost:8080"
+    echo ""
+fi
+
 echo "NOTE: OSMO API authentication is DISABLED for testing."
 echo "      The API is accessible without tokens."
 echo ""
 echo "Test the API:"
-echo "  curl http://localhost:8080/api/version"
-echo "  curl http://localhost:8080/api/workflow"
+if [[ -n "$INGRESS_URL" ]]; then
+    echo "  curl ${INGRESS_URL}/api/version"
+    echo "  curl ${INGRESS_URL}/api/workflow"
+else
+    echo "  curl http://localhost:8080/api/version"
+    echo "  curl http://localhost:8080/api/workflow"
+fi
 echo ""
 if [[ "${DEPLOY_KEYCLOAK:-false}" == "true" ]]; then
     echo "Keycloak Access (for future use):"
@@ -1311,8 +1418,9 @@ if [[ "${DEPLOY_KEYCLOAK:-false}" == "true" ]]; then
     echo "  Test User: osmo-admin / osmo-admin"
     echo ""
 fi
-echo "Next step - Deploy Backend Operator:"
-echo "  ./04-deploy-osmo-backend.sh"
+echo "Ingress resources:"
+kubectl get ingress -n "${OSMO_NAMESPACE}" 2>/dev/null || true
 echo ""
-echo "In-cluster URL (for pods): http://${OSMO_SVC}.${OSMO_NAMESPACE}.svc.cluster.local:${OSMO_PORT}"
+echo "Next step - Deploy Backend Operator:"
+echo "  ./05-deploy-osmo-backend.sh"
 echo ""

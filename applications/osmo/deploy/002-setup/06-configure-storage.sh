@@ -64,7 +64,7 @@ if ! kubectl get secret osmo-storage -n osmo &>/dev/null; then
     if [[ -z "$S3_ACCESS_KEY" || -z "$S3_SECRET_KEY" ]]; then
         log_error "Could not retrieve storage credentials"
         echo ""
-        echo "Either re-run 03-deploy-osmo-control-plane.sh or create the secret manually:"
+        echo "Either re-run 04-deploy-osmo-control-plane.sh or create the secret manually:"
         echo ""
         echo "  kubectl create secret generic osmo-storage \\"
         echo "    --namespace osmo \\"
@@ -174,7 +174,7 @@ EOF
 echo "$WORKFLOW_LOG_CONFIG" > /tmp/workflow_log_config.json
 
 # Use EDITOR='tee' trick to bypass interactive editor
-if echo 'Configure workflow log storage' | EDITOR='tee' osmo config update WORKFLOW --file /tmp/workflow_log_config.json 2>/dev/null; then
+if osmo config update WORKFLOW --file /tmp/workflow_log_config.json --description "Configure workflow log storage" 2>/dev/null; then
     log_success "Workflow log storage configured"
 else
     log_error "Failed to configure workflow log storage"
@@ -206,7 +206,7 @@ EOF
 echo "$WORKFLOW_DATA_CONFIG" > /tmp/workflow_data_config.json
 
 # Use EDITOR='tee' trick to bypass interactive editor
-if echo 'Configure workflow data storage' | EDITOR='tee' osmo config update WORKFLOW --file /tmp/workflow_data_config.json 2>/dev/null; then
+if osmo config update WORKFLOW --file /tmp/workflow_data_config.json --description "Configure workflow data storage" 2>/dev/null; then
     log_success "Workflow data storage configured"
 else
     log_error "Failed to configure workflow data storage"

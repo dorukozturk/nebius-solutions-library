@@ -207,22 +207,29 @@ See [Terraform README](deploy/001-iac/README.md) for configuration options, and 
    - KAI Scheduler for GPU workload scheduling
    - Prometheus, Grafana, and Loki for monitoring
 
-4. Deploy OSMO control plane:
+4. Deploy NGINX Ingress Controller:
    ```bash
-   ./03-deploy-osmo-control-plane.sh
+   ./03-deploy-nginx-ingress.sh
+   ```
+   
+   This deploys the community NGINX Ingress Controller with a LoadBalancer IP. It provides path-based routing to all OSMO services (API, router, Web UI). The LoadBalancer IP is auto-detected by later scripts.
+
+5. Deploy OSMO control plane:
+   ```bash
+   ./04-deploy-osmo-control-plane.sh
    ```
    
    This deploys the core OSMO services:
    - Creates `osmo` namespace and PostgreSQL/MEK secrets
    - Initializes databases on Nebius Managed PostgreSQL
    - Deploys Redis and OSMO services (API, agent, worker, logger)
-   - Sets up nginx proxy for routing
+   - Creates Kubernetes Ingress resources for path-based routing via the NGINX Ingress Controller
    
    > **Note:** The script automatically retrieves PostgreSQL password and MEK from MysteryBox if you ran `secrets-init.sh` earlier.
 
-5. Deploy OSMO backend operator:
+7. Deploy OSMO backend operator:
    ```bash
-   ./04-deploy-osmo-backend.sh
+   ./05-deploy-osmo-backend.sh
    ```
    
    The script automatically:
@@ -239,22 +246,23 @@ See [Terraform README](deploy/001-iac/README.md) for configuration options, and 
    
    > **Manual alternative:** If you prefer to create the token manually, set `OSMO_SERVICE_TOKEN` environment variable before running the script.
 
-6. Verify backend deployment:
+8. Verify backend deployment:
    
-   To verify the backend is registered with OSMO, start a port-forward and check:
+   Verify the backend is registered with OSMO using the NGINX Ingress LoadBalancer IP:
    ```bash
-   # Terminal 1: Start port-forward (keep running)
-   kubectl port-forward -n osmo svc/osmo-service 8080:80
+   # Check backend registration
+   curl http://<INGRESS_LB_IP>/api/configs/backend
    
-   # Terminal 2: Verify backend registration
+   # Or via OSMO CLI
    osmo config show BACKEND default
    ```
    
+   The Ingress LoadBalancer IP is shown in the output of `04-deploy-osmo-control-plane.sh`.
    You should see the backend configuration with status `ONLINE`.
 
-7. Configure OSMO storage:
+9. Configure OSMO storage:
    ```bash
-   ./05-configure-storage.sh
+   ./06-configure-storage.sh
    ```
    
    The script automatically:
@@ -263,47 +271,40 @@ See [Terraform README](deploy/001-iac/README.md) for configuration options, and 
    - Configures OSMO to use Nebius Object Storage for workflow artifacts
    - Verifies the configuration
    
-   > **Note:** The `osmo-storage` secret (with S3 credentials) was created automatically by `03-deploy-osmo-control-plane.sh`.
+   > **Note:** The `osmo-storage` secret (with S3 credentials) was created automatically by `04-deploy-osmo-control-plane.sh`.
 
-8. Access OSMO (port-forwarding):
+10. Access OSMO (via NGINX Ingress LoadBalancer):
    
-   Since the cluster uses private networking, use port-forwarding to access OSMO services:
-   
+   The NGINX Ingress Controller exposes OSMO via a LoadBalancer IP. The IP is shown in the output of `04-deploy-osmo-control-plane.sh`, or retrieve it with:
    ```bash
-   # Terminal 1: Forward OSMO API (required for CLI commands)
-   kubectl port-forward -n osmo svc/osmo-service 8080:80
-   
-   # Terminal 2: Forward OSMO Web UI
-   kubectl port-forward -n osmo svc/osmo-ui 8081:80
+   kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
    ```
    
-   Access points:
-   - **OSMO API**: http://localhost:8080 (for CLI and API calls)
-   - **OSMO Web UI**: http://localhost:8081 (browser-based dashboard)
+   Access points (replace `<LB_IP>` with your LoadBalancer IP):
+   - **OSMO API**: `http://<LB_IP>/api/version`
+   - **OSMO Web UI**: `http://<LB_IP>`
    
-   Login to OSMO CLI (required before running commands):
+   Login to OSMO CLI:
    ```bash
-   osmo login http://localhost:8080 --method dev --username admin
-   ```
-
-9. Configure service URL (required for workflows):
-   ```bash
-   ./06-configure-service-url.sh
+   osmo login http://<LB_IP> --method dev --username admin
    ```
    
-   The script configures `service_base_url` which is required for:
-   - The `osmo-ctrl` sidecar to stream workflow logs
-   - Task status reporting and completion tracking
-   - Authentication token refresh during workflow execution
-   
-   > **Important:** Without this configuration, workflows will get stuck with `FETCH_FAILURE` errors.
+   > **Fallback:** If the LoadBalancer IP is not reachable, you can use port-forwarding:
+   > ```bash
+   > kubectl port-forward -n osmo svc/osmo-service 8080:80
+   > osmo login http://localhost:8080 --method dev --username admin
+   > ```
 
-10. Configure pool for GPU workloads:
+   > **Note:** The `service_base_url` (required for workflow execution) is automatically configured
+   > by `04-deploy-osmo-control-plane.sh` using the NGINX Ingress LoadBalancer IP. If you need to
+   > reconfigure it manually, run `./07-configure-service-url.sh`.
+
+11. Configure pool for GPU workloads:
    
    The default pool needs GPU platform configuration to run GPU workflows. This creates a pod template with the correct node selector and tolerations for GPU nodes:
    
    ```bash
-   ./07-configure-gpu-platform.sh
+   ./08-configure-gpu-platform.sh
    ```
    
    The script:
@@ -316,27 +317,6 @@ See [Terraform README](deploy/001-iac/README.md) for configuration options, and 
    osmo config show POOL default
    osmo config show POD_TEMPLATE gpu_tolerations
    ```
-
-11. Set up port-forwarding for OSMO access:
-   
-   Before using the OSMO CLI or Web UI, set up port-forwarding to the OSMO services:
-   
-   ```bash
-   # Terminal 1: Port-forward to OSMO API (required for CLI and API access)
-   kubectl port-forward -n osmo svc/osmo-service 8080:80
-   
-   # Terminal 2: Port-forward to OSMO Web UI (optional, for browser access)
-   kubectl port-forward -n osmo svc/osmo-ui 8081:80
-   ```
-   
-   Then configure the OSMO CLI to use the forwarded port:
-   ```bash
-   osmo profile set endpoint http://localhost:8080
-   ```
-   
-   Access points:
-   - **OSMO API**: http://localhost:8080
-   - **OSMO Web UI**: http://localhost:8081
 
 12. Run a test workflow (optional):
    
@@ -356,11 +336,9 @@ See [Terraform README](deploy/001-iac/README.md) for configuration options, and 
    osmo workflow list
    osmo workflow query <workflow-id>
    
-   # View workflow logs (CLI - recommended when using port-forwarding)
+   # View workflow logs
    osmo workflow query <workflow-id> --logs
    ```
-   
-   > **Note:** When using port-forwarding, the Web UI cannot display workflow logs (it tries to resolve internal Kubernetes DNS). Use the CLI commands above or `kubectl logs` instead.
    
    Available test workflows in `workflows/osmo/`:
    - `hello_nebius.yaml` - Simple GPU hello world
