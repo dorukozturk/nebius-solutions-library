@@ -43,9 +43,14 @@ log_info "Creating namespace ${INGRESS_NAMESPACE}..."
 kubectl create namespace "${INGRESS_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
 
 log_info "Installing NGINX Ingress Controller..."
+# --set controller.progressDeadlineSeconds=600: chart v4.14+ defaults to 0 which
+# K8s 1.32+ rejects ("must be greater than minReadySeconds"). Without this fix the
+# Deployment is invalid, the controller never starts, and the admission webhook
+# blocks all Ingress resource creation in downstream scripts.
 helm upgrade --install "${INGRESS_RELEASE_NAME}" ingress-nginx/ingress-nginx \
     --namespace "${INGRESS_NAMESPACE}" \
     --set controller.service.type=LoadBalancer \
+    --set controller.progressDeadlineSeconds=600 \
     --wait --timeout 5m || {
     log_warning "Helm install returned non-zero; controller may still be starting."
 }
