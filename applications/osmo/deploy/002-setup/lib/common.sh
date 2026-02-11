@@ -27,6 +27,9 @@ log_error() {
     echo -e "${RED}[✗]${NC} $1"
 }
 
+# Pause on error so the user can read the output before the terminal closes
+trap '_exit_code=$?; if [[ $_exit_code -ne 0 ]]; then echo ""; log_error "Script failed (exit code $_exit_code). Press Enter to close..."; read -r; fi' EXIT
+
 # Read input with a prompt into a variable (bash/zsh compatible).
 read_prompt_var() {
     local prompt=$1
