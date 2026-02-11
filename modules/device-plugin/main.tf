@@ -6,7 +6,9 @@ resource "nebius_applications_v1alpha1_k8s_release" "this" {
   namespace        = "nvidia-device-plugin"
   product_slug     = "nebius/nvidia-device-plugin"
 
-  set = {
-    "dcgm-exporter.enabled" : var.dcgm_exporter_enabled
+  sensitive = {
+    set = {
+      "dcgm-exporter.enabled" = var.dcgm_exporter_enabled
+    }
   }
 }

@@ -1,6 +1,9 @@
+moved {
+  from = kubernetes_namespace.nims
+  to   = kubernetes_namespace_v1.nims
+}
 
-resource "kubernetes_namespace" "nims" {
-
+resource "kubernetes_namespace_v1" "nims" {
   metadata {
     name = var.namespace
   }

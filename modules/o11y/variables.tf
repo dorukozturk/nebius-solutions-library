@@ -32,7 +32,7 @@ variable "o11y" {
     nebius_o11y_agent = optional(object({
       enabled                  = optional(bool, true)
       collectK8sClusterMetrics = optional(bool, false)
-    })),    
+    })),
     grafana = optional(object({
       enabled       = optional(bool, true)
       pv_size       = optional(string, "25Gi")
