@@ -52,6 +52,7 @@ gpu_nodes_assign_public_ip = false  # Private only
 enable_gpu_cluster         = true
 enable_gpu_taints          = true
 gpu_nodes_preemptible      = false  # Preemptible requires project permissions
+gpu_nodes_driverfull_image = false  # Set true for Nebius pre-installed drivers (recommended for B200/B300)
 
 # -----------------------------------------------------------------------------
 # Storage

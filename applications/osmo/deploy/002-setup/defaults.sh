@@ -23,7 +23,11 @@ export TOOLKIT_ENABLED="true"
 export DEVICE_PLUGIN_ENABLED="true"
 export MIG_MANAGER_ENABLED="false"
 
-# Network Operator (only needed for InfiniBand/GPU clusters)
+# Driverfull images (Nebius pre-installed NVIDIA drivers, skips GPU Operator driver)
+# Recommended for B200/B300 GPUs where the GPU Operator's bundled driver may not support NVSwitch.
+export USE_DRIVERFULL_IMAGES="false"  # Set to "true" to use driverfull images
+
+# Network Operator (only needed for InfiniBand/GPU clusters without driverfull images)
 export ENABLE_NETWORK_OPERATOR="false"  # Set to "true" if using InfiniBand
 
 # Observability settings

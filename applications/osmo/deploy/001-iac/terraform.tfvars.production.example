@@ -55,6 +55,7 @@ enable_gpu_cluster         = true  # InfiniBand enabled
 infiniband_fabric          = null  # Use region default
 enable_gpu_taints          = true
 gpu_nodes_preemptible      = false  # Preemptible requires project permissions
+gpu_nodes_driverfull_image = true   # Nebius pre-installed drivers (recommended for B200/B300)
 
 # -----------------------------------------------------------------------------
 # Storage (production grade)

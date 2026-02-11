@@ -25,18 +25,35 @@ helm repo add nvidia https://helm.ngc.nvidia.com/nvidia --force-update
 helm repo update
 
 # -----------------------------------------------------------------------------
-# Deploy GPU Operator
+# Deploy GPU Operator (skipped when using driverfull images)
 # -----------------------------------------------------------------------------
-log_info "Deploying NVIDIA GPU Operator..."
+if [[ "${USE_DRIVERFULL_IMAGES:-false}" == "true" ]]; then
+    log_info "Skipping GPU Operator (using Nebius driverfull images with pre-installed drivers)"
+    log_info "Installing NVIDIA device plugin for driverfull mode..."
 
-kubectl create namespace "${GPU_OPERATOR_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
+    kubectl create namespace "${GPU_OPERATOR_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
 
-helm upgrade --install gpu-operator nvidia/gpu-operator \
-    --namespace "${GPU_OPERATOR_NAMESPACE}" \
-    --values "${VALUES_DIR}/gpu-operator.yaml" \
-    --timeout 10m
+    # With driverfull images, we still need the GPU Operator for toolkit, device-plugin,
+    # dcgm, etc. - but driver installation is disabled.
+    helm upgrade --install gpu-operator nvidia/gpu-operator \
+        --namespace "${GPU_OPERATOR_NAMESPACE}" \
+        --values "${VALUES_DIR}/gpu-operator.yaml" \
+        --set driver.enabled=false \
+        --timeout 10m
 
-log_success "GPU Operator deployed (pods will become ready when GPU nodes are available)"
+    log_success "GPU Operator deployed (driver disabled - using driverfull images)"
+else
+    log_info "Deploying NVIDIA GPU Operator (with driver installation)..."
+
+    kubectl create namespace "${GPU_OPERATOR_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
+
+    helm upgrade --install gpu-operator nvidia/gpu-operator \
+        --namespace "${GPU_OPERATOR_NAMESPACE}" \
+        --values "${VALUES_DIR}/gpu-operator.yaml" \
+        --timeout 10m
+
+    log_success "GPU Operator deployed (pods will become ready when GPU nodes are available)"
+fi
 
 # Brief wait for core operator pod only (not GPU node components)
 sleep 10

@@ -58,6 +58,7 @@ gpu_nodes_assign_public_ip = false
 enable_gpu_cluster         = false  # No InfiniBand for L40S
 enable_gpu_taints          = true
 gpu_nodes_preemptible      = false  # Set true if your project allows preemptible GPUs
+gpu_nodes_driverfull_image = false  # Set true for Nebius pre-installed drivers (recommended for B200/B300)
 
 # GPU options by region (see locals.tf for full list):
 #   eu-north1:  gpu-l40s-a, gpu-l40s-d, gpu-h100-sxm, gpu-h200-sxm

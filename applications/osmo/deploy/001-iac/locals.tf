@@ -91,6 +91,14 @@ locals {
   postgresql_platform  = coalesce(var.postgresql_platform, local.current_region.postgresql_platform)
   postgresql_disk_type = coalesce(var.postgresql_disk_type, local.current_region.postgresql_disk_type)
 
+  # Driverfull image: map GPU platform to CUDA driver preset
+  platform_to_cuda = {
+    gpu-b200-sxm-a = "cuda12.8"
+    gpu-b200-sxm   = "cuda12.8"
+    gpu-b300-sxm   = "cuda13.0"
+  }
+  gpu_drivers_preset = lookup(local.platform_to_cuda, local.gpu_nodes_platform, "cuda12")
+
   # Generate unique storage bucket name if not provided
   storage_bucket_name = var.storage_bucket_name != "" ? var.storage_bucket_name : "${local.name_prefix}-storage-${random_string.suffix.result}"
 

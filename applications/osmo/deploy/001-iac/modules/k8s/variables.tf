@@ -175,6 +175,18 @@ variable "gpu_nodes_preemptible" {
   default     = false
 }
 
+variable "gpu_nodes_driverfull_image" {
+  description = "Use Nebius driverfull images with pre-installed NVIDIA drivers"
+  type        = bool
+  default     = false
+}
+
+variable "gpu_drivers_preset" {
+  description = "CUDA driver preset for driverfull images (e.g. cuda12, cuda12.8, cuda13.0)"
+  type        = string
+  default     = "cuda12"
+}
+
 # -----------------------------------------------------------------------------
 # Filestore Configuration
 # -----------------------------------------------------------------------------

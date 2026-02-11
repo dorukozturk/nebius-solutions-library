@@ -89,6 +89,8 @@ module "k8s" {
   infiniband_fabric          = local.infiniband_fabric
   enable_gpu_taints          = var.enable_gpu_taints
   gpu_nodes_preemptible      = var.gpu_nodes_preemptible
+  gpu_nodes_driverfull_image = var.gpu_nodes_driverfull_image
+  gpu_drivers_preset         = local.gpu_drivers_preset
 
   # Filestore
   enable_filestore = var.enable_filestore

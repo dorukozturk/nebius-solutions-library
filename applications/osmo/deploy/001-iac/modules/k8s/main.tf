@@ -142,6 +142,9 @@ resource "nebius_mk8s_v1_node_group" "gpu" {
     # GPU cluster for InfiniBand
     gpu_cluster = var.enable_gpu_cluster ? nebius_compute_v1_gpu_cluster.main[0] : null
 
+    # Driverfull images (pre-installed NVIDIA drivers, no GPU Operator driver needed)
+    gpu_settings = var.gpu_nodes_driverfull_image ? { drivers_preset = var.gpu_drivers_preset } : null
+
     # Preemptible configuration
     preemptible = var.gpu_nodes_preemptible ? {
       on_preemption = "STOP"
