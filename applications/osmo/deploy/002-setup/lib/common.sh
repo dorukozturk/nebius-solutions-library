@@ -202,7 +202,11 @@ wait_for_pods() {
 
 # Detect OSMO service URL from the NGINX Ingress Controller's LoadBalancer.
 #
+# When TLS_ENABLED=true and OSMO_INGRESS_HOSTNAME is set, returns https://<hostname>.
+# Otherwise falls back to http://<ip>.
+#
 # Lookup order:
+#   0. If TLS enabled + hostname set, return https://<hostname> immediately
 #   1. LoadBalancer external IP   (cloud assigns a public/internal IP)
 #   2. LoadBalancer hostname       (some clouds return a DNS name instead)
 #   3. Controller ClusterIP        (fallback – works from inside the cluster)
@@ -212,7 +216,17 @@ wait_for_pods() {
 #   [[ -n "$url" ]] && echo "OSMO reachable at $url"
 detect_service_url() {
     local ns="${INGRESS_NAMESPACE:-ingress-nginx}"
-    local url=""
+    local tls_enabled="${TLS_ENABLED:-false}"
+    local hostname="${OSMO_INGRESS_HOSTNAME:-}"
+    local scheme="http"
+
+    if [[ "$tls_enabled" == "true" ]]; then
+        scheme="https"
+        if [[ -n "$hostname" ]]; then
+            echo "${scheme}://${hostname}"
+            return 0
+        fi
+    fi
 
     # Find the controller service (works for the community ingress-nginx chart)
     local lb_ip lb_host cluster_ip svc_name
@@ -225,7 +239,7 @@ detect_service_url() {
         lb_ip=$(kubectl get svc "$svc_name" -n "$ns" \
             -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
         if [[ -n "$lb_ip" ]]; then
-            echo "http://${lb_ip}"
+            echo "${scheme}://${lb_ip}"
             return 0
         fi
 
@@ -233,7 +247,7 @@ detect_service_url() {
         lb_host=$(kubectl get svc "$svc_name" -n "$ns" \
             -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
         if [[ -n "$lb_host" ]]; then
-            echo "http://${lb_host}"
+            echo "${scheme}://${lb_host}"
             return 0
         fi
 
@@ -241,13 +255,109 @@ detect_service_url() {
         cluster_ip=$(kubectl get svc "$svc_name" -n "$ns" \
             -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)
         if [[ -n "$cluster_ip" && "$cluster_ip" != "None" ]]; then
-            echo "http://${cluster_ip}"
+            echo "${scheme}://${cluster_ip}"
             return 0
         fi
     fi
 
     # Nothing found
     return 1
+}
+
+# ---------------------------------------------------------------------------
+# Envoy-aware helpers
+# When Envoy sidecar is present, these helpers port-forward directly to the
+# OSMO pod on port 8000 (bypassing Envoy) and inject x-osmo-user / x-osmo-roles
+# headers so the API recognises the caller as an admin.
+# ---------------------------------------------------------------------------
+
+# Check whether a pod matching a label selector has an "envoy" container.
+# Usage: has_envoy_sidecar <namespace> <label_selector>
+has_envoy_sidecar() {
+    local ns="${1:-osmo}"
+    # The OSMO Helm chart uses the label "app=osmo-service" (not app.kubernetes.io/name)
+    local label="${2:-app=osmo-service}"
+    kubectl get pods -n "$ns" -l "$label" -o jsonpath='{.items[0].spec.containers[*].name}' 2>/dev/null | grep -qw envoy
+}
+
+# Port-forward to the OSMO service.
+# When Envoy is present, forwards to the first matching *pod* on port 8000
+# (direct access, no auth). Otherwise forwards to svc/osmo-service:80.
+# Sets PORT_FORWARD_PID and _OSMO_AUTH_BYPASS.
+# Usage: start_osmo_port_forward <namespace> <local_port>
+start_osmo_port_forward() {
+    local ns="${1:-osmo}"
+    local local_port="${2:-8080}"
+
+    if has_envoy_sidecar "$ns" "app=osmo-service"; then
+        log_info "Envoy sidecar detected — port-forwarding to pod:8000 (bypass Envoy)"
+        local pod_name
+        pod_name=$(kubectl get pods -n "$ns" -l app=osmo-service \
+            -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+        kubectl port-forward -n "$ns" "pod/${pod_name}" "${local_port}:8000" &>/dev/null &
+        PORT_FORWARD_PID=$!
+        _OSMO_AUTH_BYPASS="true"
+    else
+        log_info "No Envoy sidecar — port-forwarding to svc/osmo-service:80"
+        kubectl port-forward -n "$ns" svc/osmo-service "${local_port}:80" &>/dev/null &
+        PORT_FORWARD_PID=$!
+        _OSMO_AUTH_BYPASS="false"
+    fi
+    export PORT_FORWARD_PID _OSMO_AUTH_BYPASS
+}
+
+# Wrapper around curl that injects admin headers when bypassing Envoy.
+# Usage: osmo_curl <METHOD> <URL> [extra_curl_args...]
+osmo_curl() {
+    local method="$1"; shift
+    local url="$1"; shift
+    local extra_args=("$@")
+
+    if [[ "${_OSMO_AUTH_BYPASS:-false}" == "true" ]]; then
+        curl -s -X "$method" "$url" \
+            -H "x-osmo-user: osmo-admin" \
+            -H "x-osmo-roles: osmo-admin,osmo-user" \
+            -H "Content-Type: application/json" \
+            "${extra_args[@]}"
+    else
+        curl -s -X "$method" "$url" \
+            -H "Content-Type: application/json" \
+            "${extra_args[@]}"
+    fi
+}
+
+# Login to OSMO via the CLI. No-op when bypassing Envoy (headers handle auth).
+# Usage: osmo_login <local_port>
+osmo_login() {
+    local port="${1:-8080}"
+    if [[ "${_OSMO_AUTH_BYPASS:-false}" == "true" ]]; then
+        log_info "Auth bypass active — skipping osmo login"
+        return 0
+    fi
+    osmo login "http://localhost:${port}" --method dev --username admin 2>/dev/null
+}
+
+# Update an OSMO config.
+# When bypassing Envoy, uses the PATCH API with configs_dict wrapper
+# (avoids the "osmo config update" CLI which may not work without a real session).
+# Otherwise delegates to `osmo config update`.
+# Usage: osmo_config_update <CONFIG_TYPE> <json_file> <description>
+osmo_config_update() {
+    local config_type="$1"
+    local json_file="$2"
+    local description="${3:-Update config}"
+    local port="${_OSMO_PORT:-8080}"
+    local config_type_lower
+    config_type_lower=$(echo "$config_type" | tr '[:upper:]' '[:lower:]')
+
+    if [[ "${_OSMO_AUTH_BYPASS:-false}" == "true" ]]; then
+        # Wrap the JSON in configs_dict and PATCH directly
+        local payload
+        payload=$(jq -n --argjson data "$(cat "$json_file")" '{"configs_dict": $data}')
+        osmo_curl PATCH "http://localhost:${port}/api/configs/${config_type_lower}" -d "$payload"
+    else
+        osmo config update "$config_type" --file "$json_file" --description "$description" 2>/dev/null
+    fi
 }
 
 # Get Terraform output (supports nested values like "postgresql.host")

@@ -43,6 +43,15 @@ export OSMO_INGRESS_HOSTNAME="${OSMO_INGRESS_HOSTNAME:-}"
 # Override for the service_base_url used by osmo-ctrl. Auto-detected from the ingress LoadBalancer if empty.
 export OSMO_INGRESS_BASE_URL="${OSMO_INGRESS_BASE_URL:-}"
 
+# Keycloak / Authentication
+# Set DEPLOY_KEYCLOAK=true to deploy Keycloak and enable OSMO auth with Envoy sidecars.
+export DEPLOY_KEYCLOAK="${DEPLOY_KEYCLOAK:-false}"
+# Keycloak hostname (e.g. auth.osmo.example.com).
+# Auto-derived from OSMO_INGRESS_HOSTNAME if empty: auth.<OSMO_INGRESS_HOSTNAME>.
+export KEYCLOAK_HOSTNAME="${KEYCLOAK_HOSTNAME:-}"
+# TLS secret name for the Keycloak ingress (separate from the main osmo-tls).
+export KEYCLOAK_TLS_SECRET_NAME="${KEYCLOAK_TLS_SECRET_NAME:-osmo-tls-auth}"
+
 # Paths
 export SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export VALUES_DIR="${SCRIPT_DIR}/values"

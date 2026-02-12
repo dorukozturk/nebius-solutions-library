@@ -93,18 +93,17 @@ if [[ -z "${OSMO_SERVICE_TOKEN:-}" ]]; then
     # If still no token, automatically create one using port-forward
     if [[ -z "$OSMO_SERVICE_TOKEN" ]]; then
         log_info "No token found - automatically creating service token..."
-        
+
         # Check if osmo CLI is available
         if ! command -v osmo &>/dev/null; then
             log_error "osmo CLI not found. Please install it first."
             exit 1
         fi
-        
-        # Start port-forward in background
-        log_info "Starting port-forward to OSMO service..."
-        kubectl port-forward -n osmo svc/osmo-service 8080:80 &>/dev/null &
-        PORT_FORWARD_PID=$!
-        
+
+        # Start port-forward using shared helper (auto-detects Envoy)
+        start_osmo_port_forward osmo 8080
+        export _OSMO_PORT=8080
+
         # Cleanup function to kill port-forward on exit
         cleanup_port_forward() {
             if [[ -n "${PORT_FORWARD_PID:-}" ]]; then
@@ -113,7 +112,7 @@ if [[ -z "${OSMO_SERVICE_TOKEN:-}" ]]; then
             fi
         }
         trap cleanup_port_forward EXIT
-        
+
         # Wait for port-forward to be ready
         log_info "Waiting for port-forward to be ready..."
         max_wait=30
@@ -127,36 +126,69 @@ if [[ -z "${OSMO_SERVICE_TOKEN:-}" ]]; then
             fi
         done
         log_success "Port-forward ready"
-        
-        # Login with dev method (since auth is disabled)
-        log_info "Logging in to OSMO (dev method)..."
-        if ! osmo login http://localhost:8080 --method dev --username admin 2>/dev/null; then
-            log_error "Failed to login to OSMO"
-            exit 1
-        fi
-        log_success "Logged in successfully"
-        
-        # Create service token
-        TOKEN_NAME="backend-token-$(date -u +%Y%m%d%H%M%S)"
-        EXPIRY_DATE=$(date -u -d "+1 year" +%F 2>/dev/null || date -u -v+1y +%F 2>/dev/null || echo "2027-01-01")
-        
-        log_info "Creating service token: $TOKEN_NAME (expires: $EXPIRY_DATE)..."
-        TOKEN_OUTPUT=$(osmo token set "$TOKEN_NAME" \
-            --expires-at "$EXPIRY_DATE" \
-            --description "Backend Operator Token (auto-generated)" \
-            --service --roles osmo-backend 2>&1)
-        
-        # Extract token from output (format: "Access token: <token>")
-        OSMO_SERVICE_TOKEN=$(echo "$TOKEN_OUTPUT" | sed -n 's/.*Access token: //p' | tr -d '\r' | xargs)
 
-        if [[ -z "$OSMO_SERVICE_TOKEN" ]]; then
-            log_error "Failed to create service token"
-            echo "Output: $TOKEN_OUTPUT"
-            exit 1
+        # Detect if Keycloak auth is active
+        KEYCLOAK_ENABLED="false"
+        if [[ "${DEPLOY_KEYCLOAK:-false}" == "true" ]] || kubectl get svc keycloak -n osmo &>/dev/null; then
+            if has_envoy_sidecar osmo "app.kubernetes.io/name=service"; then
+                KEYCLOAK_ENABLED="true"
+            fi
         fi
-        
-        log_success "Service token created successfully"
-        
+
+        if [[ "$KEYCLOAK_ENABLED" == "true" ]]; then
+            # Keycloak + Envoy mode: use the PATCH API via pod port-forward
+            log_info "Keycloak auth detected — creating service token via API..."
+
+            TOKEN_NAME="backend-token-$(date -u +%Y%m%d%H%M%S)"
+            EXPIRY_DATE=$(date -u -d "+1 year" +%F 2>/dev/null || date -u -v+1y +%F 2>/dev/null || echo "2027-01-01")
+
+            TOKEN_RESPONSE=$(osmo_curl POST "http://localhost:8080/api/auth/access_token/service/${TOKEN_NAME}" \
+                -d "{\"description\":\"Backend Operator Token\",\"expires_at\":\"${EXPIRY_DATE}\",\"roles\":[\"osmo-backend\"]}")
+
+            OSMO_SERVICE_TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.token // empty' 2>/dev/null || echo "")
+
+            if [[ -z "$OSMO_SERVICE_TOKEN" ]]; then
+                # Fallback: try extracting from different response format
+                OSMO_SERVICE_TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.access_token // empty' 2>/dev/null || echo "")
+            fi
+
+            if [[ -z "$OSMO_SERVICE_TOKEN" ]]; then
+                log_error "Failed to create service token via API"
+                echo "Response: $TOKEN_RESPONSE"
+                exit 1
+            fi
+            log_success "Service token created via API: $TOKEN_NAME"
+        else
+            # No Keycloak: use osmo CLI with dev login
+            log_info "Logging in to OSMO (dev method)..."
+            if ! osmo login http://localhost:8080 --method dev --username admin 2>/dev/null; then
+                log_error "Failed to login to OSMO"
+                exit 1
+            fi
+            log_success "Logged in successfully"
+
+            # Create service token
+            TOKEN_NAME="backend-token-$(date -u +%Y%m%d%H%M%S)"
+            EXPIRY_DATE=$(date -u -d "+1 year" +%F 2>/dev/null || date -u -v+1y +%F 2>/dev/null || echo "2027-01-01")
+
+            log_info "Creating service token: $TOKEN_NAME (expires: $EXPIRY_DATE)..."
+            TOKEN_OUTPUT=$(osmo token set "$TOKEN_NAME" \
+                --expires-at "$EXPIRY_DATE" \
+                --description "Backend Operator Token (auto-generated)" \
+                --service --roles osmo-backend 2>&1)
+
+            # Extract token from output (format: "Access token: <token>")
+            OSMO_SERVICE_TOKEN=$(echo "$TOKEN_OUTPUT" | sed -n 's/.*Access token: //p' | tr -d '\r' | xargs)
+
+            if [[ -z "$OSMO_SERVICE_TOKEN" ]]; then
+                log_error "Failed to create service token"
+                echo "Output: $TOKEN_OUTPUT"
+                exit 1
+            fi
+
+            log_success "Service token created successfully"
+        fi
+
         # Stop port-forward (we're done with it)
         cleanup_port_forward
         trap - EXIT

@@ -68,20 +68,79 @@ check_helm || exit 1
 log_info "Hostname: ${HOSTNAME}"
 log_info "TLS secret: ${TLS_SECRET}"
 
-# Verify DNS resolves to the LoadBalancer IP
+# Keycloak auth subdomain support
+DEPLOY_KEYCLOAK="${DEPLOY_KEYCLOAK:-false}"
+KC_TLS_SECRET="${KEYCLOAK_TLS_SECRET_NAME:-osmo-tls-auth}"
+AUTH_HOSTNAME=""
+if [[ "$DEPLOY_KEYCLOAK" == "true" ]]; then
+    if [[ -n "${KEYCLOAK_HOSTNAME:-}" ]]; then
+        AUTH_HOSTNAME="${KEYCLOAK_HOSTNAME}"
+    else
+        AUTH_HOSTNAME="auth.${HOSTNAME}"
+    fi
+    log_info "Keycloak auth hostname: ${AUTH_HOSTNAME}"
+    log_info "Keycloak TLS secret: ${KC_TLS_SECRET}"
+fi
+
+# Get LoadBalancer IP
 LB_IP=$(kubectl get svc -n "${INGRESS_NS}" ingress-nginx-controller \
     -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
-DNS_IP=$(dig +short "$HOSTNAME" 2>/dev/null | tail -1 || true)
 
-if [[ -n "$LB_IP" && -n "$DNS_IP" ]]; then
-    if [[ "$DNS_IP" == "$LB_IP" ]]; then
-        log_success "DNS check: ${HOSTNAME} -> ${DNS_IP} (matches LoadBalancer)"
-    else
-        log_warning "DNS mismatch: ${HOSTNAME} -> ${DNS_IP}, but LoadBalancer IP is ${LB_IP}"
-        log_warning "Let's Encrypt HTTP-01 challenge may fail if DNS doesn't point to the LoadBalancer."
+# Prompt user to set up DNS records before proceeding
+echo ""
+echo "========================================"
+echo "  DNS Record Setup Required"
+echo "========================================"
+echo ""
+if [[ -n "$LB_IP" ]]; then
+    echo "Create the following DNS A record(s) pointing to your LoadBalancer IP:"
+    echo ""
+    echo "  ${HOSTNAME}  ->  ${LB_IP}"
+    if [[ -n "$AUTH_HOSTNAME" ]]; then
+        echo "  ${AUTH_HOSTNAME}  ->  ${LB_IP}"
     fi
-elif [[ -z "$DNS_IP" ]]; then
-    log_warning "Could not resolve ${HOSTNAME}. Make sure the DNS record exists."
+else
+    echo "LoadBalancer IP not yet assigned. Check with:"
+    echo "  kubectl get svc -n ${INGRESS_NS} ingress-nginx-controller"
+    echo ""
+    echo "Once the IP is available, create DNS A record(s) for:"
+    echo "  ${HOSTNAME}"
+    if [[ -n "$AUTH_HOSTNAME" ]]; then
+        echo "  ${AUTH_HOSTNAME}"
+    fi
+fi
+echo ""
+echo "Let's Encrypt HTTP-01 challenges require DNS to resolve to the LoadBalancer."
+echo ""
+read_prompt_var "Press Enter once DNS records are configured (or type 'skip' to skip DNS check)" DNS_CONFIRM ""
+
+# Verify DNS resolves to the LoadBalancer IP
+if [[ "$DNS_CONFIRM" != "skip" ]]; then
+    DNS_IP=$(dig +short "$HOSTNAME" 2>/dev/null | tail -1 || true)
+
+    if [[ -n "$LB_IP" && -n "$DNS_IP" ]]; then
+        if [[ "$DNS_IP" == "$LB_IP" ]]; then
+            log_success "DNS check: ${HOSTNAME} -> ${DNS_IP} (matches LoadBalancer)"
+        else
+            log_warning "DNS mismatch: ${HOSTNAME} -> ${DNS_IP}, but LoadBalancer IP is ${LB_IP}"
+            log_warning "Let's Encrypt HTTP-01 challenge may fail if DNS doesn't point to the LoadBalancer."
+        fi
+    elif [[ -z "$DNS_IP" ]]; then
+        log_warning "Could not resolve ${HOSTNAME}. Make sure the DNS record exists."
+    fi
+
+    if [[ -n "$AUTH_HOSTNAME" ]]; then
+        AUTH_DNS_IP=$(dig +short "$AUTH_HOSTNAME" 2>/dev/null | tail -1 || true)
+        if [[ -n "$LB_IP" && -n "$AUTH_DNS_IP" ]]; then
+            if [[ "$AUTH_DNS_IP" == "$LB_IP" ]]; then
+                log_success "DNS check: ${AUTH_HOSTNAME} -> ${AUTH_DNS_IP} (matches LoadBalancer)"
+            else
+                log_warning "DNS mismatch: ${AUTH_HOSTNAME} -> ${AUTH_DNS_IP}, but LoadBalancer IP is ${LB_IP}"
+            fi
+        elif [[ -z "$AUTH_DNS_IP" ]]; then
+            log_warning "Could not resolve ${AUTH_HOSTNAME}. Keycloak TLS cert may fail."
+        fi
+    fi
 fi
 
 # Check if OSMO is already deployed (determines whether to patch Ingress / update config)
@@ -231,6 +290,65 @@ if [[ "$CERT_READY" != "True" ]]; then
 fi
 
 # -----------------------------------------------------------------------------
+# Step 4b: Issue TLS certificate for Keycloak auth subdomain (if DEPLOY_KEYCLOAK=true)
+# -----------------------------------------------------------------------------
+if [[ -n "$AUTH_HOSTNAME" ]]; then
+    log_info "Issuing TLS certificate for Keycloak auth subdomain: ${AUTH_HOSTNAME}..."
+
+    # Create bootstrap Ingress for auth subdomain (to trigger HTTP-01 challenge)
+    kubectl apply -f - <<EOF
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: osmo-tls-auth-bootstrap
+  namespace: ${OSMO_NS}
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - ${AUTH_HOSTNAME}
+      secretName: ${KC_TLS_SECRET}
+  rules:
+    - host: ${AUTH_HOSTNAME}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: osmo-tls-placeholder
+                port:
+                  number: 80
+EOF
+    log_success "Auth subdomain bootstrap Ingress created"
+
+    # Wait for auth certificate
+    log_info "Waiting for auth TLS certificate to be issued (up to 120s)..."
+    AUTH_CERT_READY=""
+    for i in $(seq 1 24); do
+        AUTH_CERT_READY=$(kubectl get certificate "${KC_TLS_SECRET}" -n "${OSMO_NS}" \
+            -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+        if [[ "$AUTH_CERT_READY" == "True" ]]; then
+            log_success "Auth TLS certificate issued and ready"
+            break
+        fi
+        sleep 5
+    done
+
+    if [[ "$AUTH_CERT_READY" != "True" ]]; then
+        log_warning "Auth certificate not ready yet. It may take a few more minutes."
+        log_info "Check with: kubectl get certificate ${KC_TLS_SECRET} -n ${OSMO_NS}"
+    fi
+
+    # Clean up the bootstrap Ingress if Keycloak will create its own
+    if [[ "$OSMO_DEPLOYED" == "true" ]]; then
+        kubectl delete ingress osmo-tls-auth-bootstrap -n "${OSMO_NS}" --ignore-not-found 2>/dev/null
+    fi
+fi
+
+# -----------------------------------------------------------------------------
 # Step 5: Update OSMO service_base_url to HTTPS (only if OSMO is deployed)
 # -----------------------------------------------------------------------------
 if [[ "$OSMO_DEPLOYED" == "true" ]]; then
@@ -304,10 +422,17 @@ if [[ "$OSMO_DEPLOYED" == "true" ]]; then
     echo "  osmo login https://${HOSTNAME} --method dev --username admin"
 else
     echo "TLS certificate prepared for: ${HOSTNAME}"
+    if [[ -n "$AUTH_HOSTNAME" ]]; then
+        echo "Auth TLS certificate prepared for: ${AUTH_HOSTNAME}"
+    fi
     echo ""
     echo "Next steps:"
-    echo "  1. Wait for certificate to be ready: kubectl get certificate -n ${OSMO_NS}"
+    echo "  1. Wait for certificate(s) to be ready: kubectl get certificate -n ${OSMO_NS}"
     echo "  2. Deploy OSMO: ./05-deploy-osmo-control-plane.sh"
     echo "     (It will auto-detect the TLS cert and create HTTPS Ingress)"
+    if [[ -n "$AUTH_HOSTNAME" ]]; then
+        echo "  3. Deploy with Keycloak: DEPLOY_KEYCLOAK=true ./05-deploy-osmo-control-plane.sh"
+        echo "     (Keycloak will be exposed at https://${AUTH_HOSTNAME})"
+    fi
 fi
 echo ""

@@ -24,8 +24,9 @@ check_kubectl || exit 1
 # -----------------------------------------------------------------------------
 log_info "Starting port-forward to OSMO service..."
 
-kubectl port-forward -n osmo svc/osmo-service 8080:80 &>/dev/null &
-PORT_FORWARD_PID=$!
+# Start port-forward using shared helper (auto-detects Envoy)
+start_osmo_port_forward osmo 8080
+export _OSMO_PORT=8080
 
 cleanup_port_forward() {
     if [[ -n "${PORT_FORWARD_PID:-}" ]]; then
@@ -49,9 +50,9 @@ while ! curl -s -o /dev/null -w "%{http_code}" "http://localhost:8080/api/versio
 done
 log_success "Port-forward ready"
 
-# Login
+# Login (no-op when bypassing Envoy)
 log_info "Logging in to OSMO..."
-if ! osmo login http://localhost:8080 --method dev --username admin 2>/dev/null; then
+if ! osmo_login 8080; then
     log_error "Failed to login to OSMO"
     exit 1
 fi
@@ -83,7 +84,7 @@ fi
 # -----------------------------------------------------------------------------
 log_info "Checking current service_base_url..."
 
-CURRENT_URL=$(curl -s "http://localhost:8080/api/configs/service" 2>/dev/null | jq -r '.service_base_url // ""')
+CURRENT_URL=$(osmo_curl GET "http://localhost:8080/api/configs/service" 2>/dev/null | jq -r '.service_base_url // ""')
 echo "Current service_base_url: '${CURRENT_URL}'"
 
 if [[ -n "$CURRENT_URL" && "$CURRENT_URL" != "null" && "$CURRENT_URL" == "$SERVICE_URL" ]]; then
@@ -107,7 +108,7 @@ cat > /tmp/service_url_fix.json << EOF
 }
 EOF
 
-if osmo config update SERVICE --file /tmp/service_url_fix.json --description "Set service_base_url for osmo-ctrl sidecar" 2>/dev/null; then
+if osmo_config_update SERVICE /tmp/service_url_fix.json "Set service_base_url for osmo-ctrl sidecar"; then
     log_success "service_base_url configured"
 else
     log_error "Failed to configure service_base_url"
@@ -122,7 +123,7 @@ rm -f /tmp/service_url_fix.json
 # -----------------------------------------------------------------------------
 log_info "Verifying configuration..."
 
-NEW_URL=$(curl -s "http://localhost:8080/api/configs/service" 2>/dev/null | jq -r '.service_base_url // ""')
+NEW_URL=$(osmo_curl GET "http://localhost:8080/api/configs/service" 2>/dev/null | jq -r '.service_base_url // ""')
 
 if [[ "$NEW_URL" == "$SERVICE_URL" ]]; then
     log_success "service_base_url verified: ${NEW_URL}"

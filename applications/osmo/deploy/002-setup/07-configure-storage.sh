@@ -90,9 +90,9 @@ fi
 # -----------------------------------------------------------------------------
 log_info "Starting port-forward to OSMO service..."
 
-# Start port-forward in background
-kubectl port-forward -n osmo svc/osmo-service 8080:80 &>/dev/null &
-PORT_FORWARD_PID=$!
+# Start port-forward using shared helper (auto-detects Envoy)
+start_osmo_port_forward osmo 8080
+export _OSMO_PORT=8080
 
 # Cleanup function
 cleanup_port_forward() {
@@ -117,9 +117,9 @@ while ! curl -s -o /dev/null -w "%{http_code}" "http://localhost:8080/api/versio
 done
 log_success "Port-forward ready"
 
-# Login with dev method
+# Login (no-op when bypassing Envoy)
 log_info "Logging in to OSMO..."
-if ! osmo login http://localhost:8080 --method dev --username admin 2>/dev/null; then
+if ! osmo_login 8080; then
     log_error "Failed to login to OSMO"
     exit 1
 fi
@@ -170,11 +170,10 @@ WORKFLOW_LOG_CONFIG=$(cat <<EOF
 EOF
 )
 
-# Write to temp file for osmo CLI
+# Write to temp file
 echo "$WORKFLOW_LOG_CONFIG" > /tmp/workflow_log_config.json
 
-# Use EDITOR='tee' trick to bypass interactive editor
-if osmo config update WORKFLOW --file /tmp/workflow_log_config.json --description "Configure workflow log storage" 2>/dev/null; then
+if osmo_config_update WORKFLOW /tmp/workflow_log_config.json "Configure workflow log storage"; then
     log_success "Workflow log storage configured"
 else
     log_error "Failed to configure workflow log storage"
@@ -202,11 +201,10 @@ WORKFLOW_DATA_CONFIG=$(cat <<EOF
 EOF
 )
 
-# Write to temp file for osmo CLI
+# Write to temp file
 echo "$WORKFLOW_DATA_CONFIG" > /tmp/workflow_data_config.json
 
-# Use EDITOR='tee' trick to bypass interactive editor
-if osmo config update WORKFLOW --file /tmp/workflow_data_config.json --description "Configure workflow data storage" 2>/dev/null; then
+if osmo_config_update WORKFLOW /tmp/workflow_data_config.json "Configure workflow data storage"; then
     log_success "Workflow data storage configured"
 else
     log_error "Failed to configure workflow data storage"
@@ -225,7 +223,7 @@ log_info "Verifying storage configuration..."
 echo ""
 echo "Workflow configuration:"
 osmo config show WORKFLOW 2>/dev/null || \
-    curl -s "http://localhost:8080/api/configs/workflow" 2>/dev/null | jq '.' || \
+    osmo_curl GET "http://localhost:8080/api/configs/workflow" 2>/dev/null | jq '.' || \
     log_warning "Could not retrieve workflow config for verification"
 
 # Cleanup
