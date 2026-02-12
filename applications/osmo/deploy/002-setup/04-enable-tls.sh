@@ -343,10 +343,11 @@ EOF
         log_info "Check with: kubectl get certificate ${KC_TLS_SECRET} -n ${OSMO_NS}"
     fi
 
-    # Clean up the bootstrap Ingress if Keycloak will create its own
-    if [[ "$OSMO_DEPLOYED" == "true" ]]; then
-        kubectl delete ingress osmo-tls-auth-bootstrap -n "${OSMO_NS}" --ignore-not-found 2>/dev/null
-    fi
+    # Clean up the bootstrap Ingress once the certificate is issued.
+    # If left in place, the NGINX admission webhook will reject any Helm chart
+    # (e.g. Keycloak) that tries to create an ingress for the same host+path.
+    log_info "Removing auth bootstrap ingress (certificate provisioned)..."
+    kubectl delete ingress osmo-tls-auth-bootstrap -n "${OSMO_NS}" --ignore-not-found 2>/dev/null
 fi
 
 # -----------------------------------------------------------------------------
@@ -398,12 +399,13 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-# Step 6: Clean up bootstrap Ingress (if OSMO was deployed after cert issued)
+# Step 6: Clean up bootstrap Ingress (certificate already provisioned)
 # -----------------------------------------------------------------------------
-if [[ "$OSMO_DEPLOYED" == "true" ]]; then
-    # Remove the bootstrap ingress if it exists (from a previous Mode A run)
-    kubectl delete ingress osmo-tls-bootstrap -n "${OSMO_NS}" --ignore-not-found 2>/dev/null
-fi
+# Always remove the bootstrap ingress once certs are issued. If left in place,
+# the NGINX admission webhook will reject any Helm chart (e.g. osmo-ui) that
+# tries to create an ingress for the same host+path.
+log_info "Removing main bootstrap ingress (certificate provisioned)..."
+kubectl delete ingress osmo-tls-bootstrap -n "${OSMO_NS}" --ignore-not-found 2>/dev/null
 
 # -----------------------------------------------------------------------------
 # Done

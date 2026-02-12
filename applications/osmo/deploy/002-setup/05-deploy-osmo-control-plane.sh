@@ -709,6 +709,12 @@ fi)
     value: "true"
 EOF
 
+    # Remove the TLS bootstrap ingress for the auth subdomain (if it exists).
+    # It was created by 04-enable-tls.sh solely to trigger the cert-manager HTTP-01
+    # challenge. If left in place, the NGINX admission webhook rejects the Keycloak
+    # chart's ingress for the same host+path.
+    kubectl delete ingress osmo-tls-auth-bootstrap -n "${OSMO_NAMESPACE}" --ignore-not-found 2>/dev/null || true
+
     # Install or upgrade Keycloak
     helm upgrade --install keycloak bitnami/keycloak \
         --namespace "${OSMO_NAMESPACE}" \
@@ -1432,6 +1438,13 @@ EOF
 # -----------------------------------------------------------------------------
 # Step 6: Deploy OSMO Service
 # -----------------------------------------------------------------------------
+
+# Remove the TLS bootstrap ingress for the main domain (if it exists).
+# It was created by 04-enable-tls.sh solely to trigger the cert-manager HTTP-01
+# challenge. If left in place, its catch-all path (/) routes to a placeholder
+# service and returns 503 for any path not covered by a more specific ingress.
+kubectl delete ingress osmo-tls-bootstrap -n "${OSMO_NAMESPACE}" --ignore-not-found 2>/dev/null || true
+
 log_info "Deploying OSMO Service..."
 
 SERVICE_HELM_ARGS=(
