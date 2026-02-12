@@ -35,25 +35,23 @@ BACKEND_NAME="${OSMO_BACKEND_NAME:-default}"
 if [[ -z "${OSMO_SERVICE_URL:-}" ]]; then
     log_info "Auto-detecting in-cluster OSMO Agent URL..."
     
-    # Backend operators MUST connect to osmo-agent for WebSocket connections
-    # The osmo-service WebSocket routes only exist in dev mode
+    # Backend operators MUST connect to osmo-agent for WebSocket connections.
+    # Prefer osmo-agent-internal (bypasses Envoy sidecar — no JWT needed for internal comms).
+    # Falls back to osmo-agent if the internal service doesn't exist.
+    OSMO_AGENT_INTERNAL=$(kubectl get svc -n osmo osmo-agent-internal -o jsonpath='{.metadata.name}' 2>/dev/null || echo "")
     OSMO_AGENT=$(kubectl get svc -n osmo osmo-agent -o jsonpath='{.metadata.name}' 2>/dev/null || echo "")
-    
-    if [[ -n "$OSMO_AGENT" ]]; then
+
+    if [[ -n "$OSMO_AGENT_INTERNAL" ]]; then
+        OSMO_SERVICE_URL="http://osmo-agent-internal.osmo.svc.cluster.local:80"
+        log_success "In-cluster Agent URL (internal, no Envoy): ${OSMO_SERVICE_URL}"
+    elif [[ -n "$OSMO_AGENT" ]]; then
         OSMO_SERVICE_URL="http://osmo-agent.osmo.svc.cluster.local:80"
         log_success "In-cluster Agent URL: ${OSMO_SERVICE_URL}"
     else
-        # Fallback: try to detect from any osmo-agent service
-        OSMO_AGENT=$(kubectl get svc -n osmo -l app.kubernetes.io/name=agent -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-        if [[ -n "$OSMO_AGENT" ]]; then
-            OSMO_SERVICE_URL="http://${OSMO_AGENT}.osmo.svc.cluster.local:80"
-            log_success "In-cluster Agent URL: ${OSMO_SERVICE_URL}"
-        else
-            echo ""
-            log_error "Could not detect OSMO Agent service. Deploy OSMO first: ./05-deploy-osmo-control-plane.sh"
-            log_error "Note: Backend operators require osmo-agent service for WebSocket connections"
-            exit 1
-        fi
+        echo ""
+        log_error "Could not detect OSMO Agent service. Deploy OSMO first: ./05-deploy-osmo-control-plane.sh"
+        log_error "Note: Backend operators require osmo-agent service for WebSocket connections"
+        exit 1
     fi
 fi
 
@@ -130,7 +128,7 @@ if [[ -z "${OSMO_SERVICE_TOKEN:-}" ]]; then
         # Detect if Keycloak auth is active
         KEYCLOAK_ENABLED="false"
         if [[ "${DEPLOY_KEYCLOAK:-false}" == "true" ]] || kubectl get svc keycloak -n osmo &>/dev/null; then
-            if has_envoy_sidecar osmo "app.kubernetes.io/name=service"; then
+            if has_envoy_sidecar osmo "app=osmo-service"; then
                 KEYCLOAK_ENABLED="true"
             fi
         fi
@@ -142,15 +140,11 @@ if [[ -z "${OSMO_SERVICE_TOKEN:-}" ]]; then
             TOKEN_NAME="backend-token-$(date -u +%Y%m%d%H%M%S)"
             EXPIRY_DATE=$(date -u -d "+1 year" +%F 2>/dev/null || date -u -v+1y +%F 2>/dev/null || echo "2027-01-01")
 
-            TOKEN_RESPONSE=$(osmo_curl POST "http://localhost:8080/api/auth/access_token/service/${TOKEN_NAME}" \
-                -d "{\"description\":\"Backend Operator Token\",\"expires_at\":\"${EXPIRY_DATE}\",\"roles\":[\"osmo-backend\"]}")
+            TOKEN_RESPONSE=$(osmo_curl POST \
+                "http://localhost:8080/api/auth/access_token/service/${TOKEN_NAME}?expires_at=${EXPIRY_DATE}&roles=osmo-backend")
 
-            OSMO_SERVICE_TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.token // empty' 2>/dev/null || echo "")
-
-            if [[ -z "$OSMO_SERVICE_TOKEN" ]]; then
-                # Fallback: try extracting from different response format
-                OSMO_SERVICE_TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.access_token // empty' 2>/dev/null || echo "")
-            fi
+            # API returns the token as a plain JSON string (e.g. "abc123...")
+            OSMO_SERVICE_TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '. // empty' 2>/dev/null || echo "")
 
             if [[ -z "$OSMO_SERVICE_TOKEN" ]]; then
                 log_error "Failed to create service token via API"

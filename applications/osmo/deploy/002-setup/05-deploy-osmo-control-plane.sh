@@ -430,6 +430,24 @@ meks:
 
 log_success "MEK secrets created"
 
+# If the MEK was regenerated (new key), OSMO's encrypted signing keys in the DB
+# will be invalid (encrypted with the old MEK). Delete stale service_auth so OSMO
+# re-generates signing keys on next startup with the current MEK.
+# This is safe on first deploy (no-op) and on re-runs (idempotent).
+if [[ -n "${POSTGRES_HOST:-}" && -n "${POSTGRES_PASSWORD:-}" ]]; then
+    log_info "Clearing stale JWT signing keys (will be regenerated on startup)..."
+    kubectl run osmo-mek-key-reset --namespace "${OSMO_NAMESPACE}" \
+        --image=postgres:16-alpine --restart=Never \
+        --env="PGPASSWORD=${POSTGRES_PASSWORD}" \
+        --command -- sh -c "psql -h '${POSTGRES_HOST}' -p '${POSTGRES_PORT:-5432}' \
+            -U '${POSTGRES_USER:-osmo_admin}' -d osmo \
+            -c \"DELETE FROM configs WHERE key = 'service_auth' AND type = 'SERVICE';\" 2>/dev/null || true" \
+        2>/dev/null || true
+    kubectl wait --for=condition=Ready pod/osmo-mek-key-reset -n "${OSMO_NAMESPACE}" --timeout=30s 2>/dev/null || true
+    sleep 5
+    kubectl delete pod osmo-mek-key-reset -n "${OSMO_NAMESPACE}" --force 2>/dev/null || true
+fi
+
 # -----------------------------------------------------------------------------
 # Step 3.5: Deploy Redis (Required for OSMO rate limiting)
 # -----------------------------------------------------------------------------
@@ -1144,10 +1162,14 @@ services:
         nginx.ingress.kubernetes.io/proxy-busy-buffers-size: "32k"
         nginx.ingress.kubernetes.io/large-client-header-buffers: "4 16k"
     # Authentication configuration
+    # NOTE: auth.enabled must be false — Envoy sidecars handle JWT/OAuth2 auth externally.
+    # Setting auth.enabled=true breaks OSMO's internal JWT signing (/api/auth/jwt/access_token)
+    # because the service_auth code path conflicts with external OIDC endpoints.
+    # The OIDC endpoints are still listed so the osmo CLI (osmo login) can discover them.
 $(if [[ "$AUTH_ENABLED" == "true" ]]; then
 cat <<AUTH_BLOCK
     auth:
-      enabled: true
+      enabled: false
       device_endpoint: ${KEYCLOAK_EXTERNAL_URL}/realms/osmo/protocol/openid-connect/auth/device
       device_client_id: osmo-device
       browser_endpoint: ${KEYCLOAK_EXTERNAL_URL}/realms/osmo/protocol/openid-connect/auth
@@ -1157,7 +1179,6 @@ cat <<AUTH_BLOCK
 AUTH_BLOCK
 else
 cat <<NOAUTH_BLOCK
-    # NOTE: Auth is DISABLED. Set DEPLOY_KEYCLOAK=true with TLS to enable.
     auth:
       enabled: false
 NOAUTH_BLOCK
@@ -1412,6 +1433,29 @@ helm upgrade --install osmo-service osmo/service \
 }
 
 log_success "OSMO Service deployed"
+
+# Create an internal service for osmo-agent that bypasses the Envoy sidecar.
+# Backend operators (06-deploy-osmo-backend.sh) connect via this service so they
+# can authenticate with OSMO service tokens without needing Envoy/Keycloak JWTs.
+log_info "Creating osmo-agent-internal service (bypasses Envoy)..."
+kubectl apply -n "${OSMO_NAMESPACE}" -f - <<AGENTSVC
+apiVersion: v1
+kind: Service
+metadata:
+  name: osmo-agent-internal
+  labels:
+    app: osmo-agent
+spec:
+  type: ClusterIP
+  selector:
+    app: osmo-agent
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+      protocol: TCP
+AGENTSVC
+log_success "osmo-agent-internal service ready"
 
 log_success "OSMO Service Helm deployment complete"
 
