@@ -1,17 +1,27 @@
 #!/bin/bash
 #
-# Enable TLS/HTTPS for OSMO using cert-manager + Let's Encrypt
+# Enable TLS/HTTPS using cert-manager + Let's Encrypt
+#
+# Can be run at two points in the deployment flow:
+#
+#   A) Right after 03-deploy-nginx-ingress.sh (RECOMMENDED):
+#      Installs cert-manager, issues the TLS certificate early.
+#      When 05-deploy-osmo-control-plane.sh runs later, it auto-detects the
+#      certificate and creates TLS-enabled Ingress resources from the start.
+#
+#   B) After 05-deploy-osmo-control-plane.sh (retrofit existing deployment):
+#      Does everything in (A) plus patches existing OSMO Ingress resources
+#      and updates service_base_url to HTTPS.
 #
 # Prerequisites:
-#   1. OSMO is deployed and accessible over HTTP (scripts 01-05)
-#   2. A DNS record points your domain to the LoadBalancer IP
-#      (check with: kubectl get svc -n ingress-nginx ingress-nginx-controller)
+#   1. NGINX Ingress Controller deployed (03-deploy-nginx-ingress.sh)
+#   2. A DNS A record pointing your domain to the LoadBalancer IP
 #
 # Usage:
-#   ./09-enable-tls.sh <hostname>
+#   ./04-enable-tls.sh <hostname>
 #
 # Example:
-#   ./09-enable-tls.sh vl51.eu-north1.osmo.nebius.cloud
+#   ./04-enable-tls.sh vl51.eu-north1.osmo.nebius.cloud
 #
 # Optional environment variables:
 #   OSMO_TLS_EMAIL        - Email for Let's Encrypt expiry notices (default: noreply@<domain>)
@@ -31,7 +41,7 @@ INGRESS_NS="${INGRESS_NAMESPACE:-ingress-nginx}"
 
 echo ""
 echo "========================================"
-echo "  Enable TLS/HTTPS for OSMO"
+echo "  Enable TLS/HTTPS"
 echo "========================================"
 echo ""
 
@@ -74,14 +84,16 @@ elif [[ -z "$DNS_IP" ]]; then
     log_warning "Could not resolve ${HOSTNAME}. Make sure the DNS record exists."
 fi
 
-# Verify Ingress resources exist
+# Check if OSMO is already deployed (determines whether to patch Ingress / update config)
 INGRESS_COUNT=$(kubectl get ingress -n "${OSMO_NS}" --no-headers 2>/dev/null | wc -l | tr -d ' ')
-if [[ "$INGRESS_COUNT" -eq 0 ]]; then
-    log_error "No Ingress resources found in namespace ${OSMO_NS}."
-    log_error "Run 04-deploy-osmo-control-plane.sh first."
-    exit 1
+if [[ "$INGRESS_COUNT" -gt 0 ]]; then
+    log_info "Found ${INGRESS_COUNT} Ingress resource(s) in ${OSMO_NS} (will patch with TLS)"
+    OSMO_DEPLOYED="true"
+else
+    log_info "No OSMO Ingress resources yet — preparing cert-manager and certificate"
+    log_info "Step 05 will auto-detect the TLS cert and create HTTPS Ingress"
+    OSMO_DEPLOYED="false"
 fi
-log_info "Found ${INGRESS_COUNT} Ingress resource(s) in ${OSMO_NS}"
 
 # -----------------------------------------------------------------------------
 # Step 1: Install cert-manager
@@ -125,16 +137,21 @@ EOF
 log_success "ClusterIssuer created"
 
 # -----------------------------------------------------------------------------
-# Step 3: Patch all Ingress resources with TLS
+# Step 3: Issue TLS certificate
 # -----------------------------------------------------------------------------
-log_info "Patching Ingress resources for TLS..."
 
-for ing in $(kubectl get ingress -n "${OSMO_NS}" -o name 2>/dev/null); do
-    ing_name="${ing#*/}"
-    # Get current HTTP paths from this ingress
-    CURRENT_HTTP=$(kubectl get "$ing" -n "${OSMO_NS}" -o jsonpath='{.spec.rules[0].http}')
+# Ensure the OSMO namespace exists (needed for Certificate resource)
+kubectl create namespace "${OSMO_NS}" --dry-run=client -o yaml | kubectl apply -f -
 
-    kubectl patch "$ing" -n "${OSMO_NS}" --type=merge -p "$(cat <<PATCH
+if [[ "$OSMO_DEPLOYED" == "true" ]]; then
+    # Mode B: Patch existing Ingress resources with TLS
+    log_info "Patching Ingress resources for TLS..."
+
+    for ing in $(kubectl get ingress -n "${OSMO_NS}" -o name 2>/dev/null); do
+        ing_name="${ing#*/}"
+        CURRENT_HTTP=$(kubectl get "$ing" -n "${OSMO_NS}" -o jsonpath='{.spec.rules[0].http}')
+
+        kubectl patch "$ing" -n "${OSMO_NS}" --type=merge -p "$(cat <<PATCH
 {
   "metadata": {
     "annotations": {
@@ -154,7 +171,39 @@ for ing in $(kubectl get ingress -n "${OSMO_NS}" -o name 2>/dev/null); do
 }
 PATCH
 )" && log_success "  ${ing_name} patched" || log_warning "  Failed to patch ${ing_name}"
-done
+    done
+else
+    # Mode A: Create a temporary Ingress to trigger HTTP-01 challenge
+    # cert-manager needs an Ingress with the annotation to issue the cert
+    log_info "Creating temporary Ingress for certificate issuance..."
+    kubectl apply -f - <<EOF
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: osmo-tls-bootstrap
+  namespace: ${OSMO_NS}
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - ${HOSTNAME}
+      secretName: ${TLS_SECRET}
+  rules:
+    - host: ${HOSTNAME}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: osmo-tls-placeholder
+                port:
+                  number: 80
+EOF
+    log_success "Bootstrap Ingress created"
+fi
 
 # -----------------------------------------------------------------------------
 # Step 4: Wait for certificate
@@ -182,47 +231,59 @@ if [[ "$CERT_READY" != "True" ]]; then
 fi
 
 # -----------------------------------------------------------------------------
-# Step 5: Update OSMO service_base_url to HTTPS
+# Step 5: Update OSMO service_base_url to HTTPS (only if OSMO is deployed)
 # -----------------------------------------------------------------------------
-log_info "Updating OSMO service_base_url to https://${HOSTNAME}..."
+if [[ "$OSMO_DEPLOYED" == "true" ]]; then
+    log_info "Updating OSMO service_base_url to https://${HOSTNAME}..."
 
-kubectl port-forward -n "${OSMO_NS}" svc/osmo-service 8080:80 &>/dev/null &
-_PF_PID=$!
-trap 'kill $_PF_PID 2>/dev/null; wait $_PF_PID 2>/dev/null' EXIT
+    kubectl port-forward -n "${OSMO_NS}" svc/osmo-service 8080:80 &>/dev/null &
+    _PF_PID=$!
+    trap 'kill $_PF_PID 2>/dev/null; wait $_PF_PID 2>/dev/null' EXIT
 
-# Wait for port-forward
-_pf_ready=false
-for i in $(seq 1 15); do
-    if curl -s -o /dev/null -w "%{http_code}" "http://localhost:8080/api/version" 2>/dev/null | grep -q "200\|401\|403"; then
-        _pf_ready=true
-        break
-    fi
-    sleep 1
-done
+    # Wait for port-forward
+    _pf_ready=false
+    for i in $(seq 1 15); do
+        if curl -s -o /dev/null -w "%{http_code}" "http://localhost:8080/api/version" 2>/dev/null | grep -q "200\|401\|403"; then
+            _pf_ready=true
+            break
+        fi
+        sleep 1
+    done
 
-if [[ "$_pf_ready" == "true" ]]; then
-    # Login
-    if osmo login http://localhost:8080 --method dev --username admin 2>/dev/null; then
-        cat > /tmp/service_url_tls.json <<SVCEOF
+    if [[ "$_pf_ready" == "true" ]]; then
+        if osmo login http://localhost:8080 --method dev --username admin 2>/dev/null; then
+            cat > /tmp/service_url_tls.json <<SVCEOF
 {
   "service_base_url": "https://${HOSTNAME}"
 }
 SVCEOF
-        if osmo config update SERVICE --file /tmp/service_url_tls.json --description "Enable HTTPS" 2>/dev/null; then
-            NEW_URL=$(curl -s "http://localhost:8080/api/configs/service" 2>/dev/null | jq -r '.service_base_url // ""')
-            log_success "service_base_url updated to: ${NEW_URL}"
+            if osmo config update SERVICE --file /tmp/service_url_tls.json --description "Enable HTTPS" 2>/dev/null; then
+                NEW_URL=$(curl -s "http://localhost:8080/api/configs/service" 2>/dev/null | jq -r '.service_base_url // ""')
+                log_success "service_base_url updated to: ${NEW_URL}"
+            else
+                log_warning "Could not update service_base_url automatically."
+                log_info "Run: ./08-configure-service-url.sh https://${HOSTNAME}"
+            fi
+            rm -f /tmp/service_url_tls.json
         else
-            log_warning "Could not update service_base_url automatically."
-            log_info "Run: ./07-configure-service-url.sh https://${HOSTNAME}"
+            log_warning "Could not login to OSMO API. Update service_base_url manually:"
+            log_info "  ./08-configure-service-url.sh https://${HOSTNAME}"
         fi
-        rm -f /tmp/service_url_tls.json
     else
-        log_warning "Could not login to OSMO API. Update service_base_url manually:"
-        log_info "  ./07-configure-service-url.sh https://${HOSTNAME}"
+        log_warning "Could not connect to OSMO API. Update service_base_url manually:"
+        log_info "  ./08-configure-service-url.sh https://${HOSTNAME}"
     fi
 else
-    log_warning "Could not connect to OSMO API. Update service_base_url manually:"
-    log_info "  ./07-configure-service-url.sh https://${HOSTNAME}"
+    log_info "Skipping service_base_url update (OSMO not deployed yet)"
+    log_info "Step 05 will auto-detect TLS and use https:// for service_base_url"
+fi
+
+# -----------------------------------------------------------------------------
+# Step 6: Clean up bootstrap Ingress (if OSMO was deployed after cert issued)
+# -----------------------------------------------------------------------------
+if [[ "$OSMO_DEPLOYED" == "true" ]]; then
+    # Remove the bootstrap ingress if it exists (from a previous Mode A run)
+    kubectl delete ingress osmo-tls-bootstrap -n "${OSMO_NS}" --ignore-not-found 2>/dev/null
 fi
 
 # -----------------------------------------------------------------------------
@@ -230,13 +291,23 @@ fi
 # -----------------------------------------------------------------------------
 echo ""
 echo "========================================"
-log_success "TLS enabled for OSMO"
+log_success "TLS setup complete"
 echo "========================================"
 echo ""
-echo "OSMO is now accessible at:"
-echo "  https://${HOSTNAME}"
-echo "  https://${HOSTNAME}/api/version"
-echo ""
-echo "CLI login:"
-echo "  osmo login https://${HOSTNAME} --method dev --username admin"
+
+if [[ "$OSMO_DEPLOYED" == "true" ]]; then
+    echo "OSMO is now accessible at:"
+    echo "  https://${HOSTNAME}"
+    echo "  https://${HOSTNAME}/api/version"
+    echo ""
+    echo "CLI login:"
+    echo "  osmo login https://${HOSTNAME} --method dev --username admin"
+else
+    echo "TLS certificate prepared for: ${HOSTNAME}"
+    echo ""
+    echo "Next steps:"
+    echo "  1. Wait for certificate to be ready: kubectl get certificate -n ${OSMO_NS}"
+    echo "  2. Deploy OSMO: ./05-deploy-osmo-control-plane.sh"
+    echo "     (It will auto-detect the TLS cert and create HTTPS Ingress)"
+fi
 echo ""

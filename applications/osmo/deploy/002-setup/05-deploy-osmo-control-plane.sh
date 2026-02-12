@@ -859,6 +859,17 @@ else
     log_info "Ingress hostname: (any — IP-based access)"
 fi
 
+# Auto-detect TLS certificate (created by 04-enable-tls.sh run before this script)
+TLS_SECRET="${OSMO_TLS_SECRET_NAME:-osmo-tls}"
+TLS_ENABLED="false"
+if kubectl get secret "${TLS_SECRET}" -n "${OSMO_NAMESPACE}" &>/dev/null; then
+    log_success "TLS certificate detected (${TLS_SECRET}) — will create HTTPS Ingress"
+    TLS_ENABLED="true"
+elif kubectl get certificate "${TLS_SECRET}" -n "${OSMO_NAMESPACE}" &>/dev/null; then
+    log_info "TLS certificate pending (${TLS_SECRET}) — will create HTTPS Ingress"
+    TLS_ENABLED="true"
+fi
+
 # Create the values file with proper extraEnv and extraVolumes for each service
 # This configures PostgreSQL password via env var and MEK via volume mount
 cat > /tmp/osmo_values.yaml <<EOF
@@ -1170,6 +1181,43 @@ fi
 rm -f /tmp/osmo_values.yaml
 
 # -----------------------------------------------------------------------------
+# Step 8.5: Patch Ingress resources with TLS (if cert exists from 04-enable-tls.sh)
+# -----------------------------------------------------------------------------
+if [[ "$TLS_ENABLED" == "true" && -n "$INGRESS_HOSTNAME" ]]; then
+    log_info "Patching Ingress resources for TLS..."
+    for ing in $(kubectl get ingress -n "${OSMO_NAMESPACE}" -o name 2>/dev/null); do
+        ing_name="${ing#*/}"
+        [[ "$ing_name" == "osmo-tls-bootstrap" ]] && continue  # skip bootstrap ingress
+        CURRENT_HTTP=$(kubectl get "$ing" -n "${OSMO_NAMESPACE}" -o jsonpath='{.spec.rules[0].http}')
+
+        kubectl patch "$ing" -n "${OSMO_NAMESPACE}" --type=merge -p "$(cat <<PATCH
+{
+  "metadata": {
+    "annotations": {
+      "cert-manager.io/cluster-issuer": "letsencrypt"
+    }
+  },
+  "spec": {
+    "tls": [{
+      "hosts": ["${INGRESS_HOSTNAME}"],
+      "secretName": "${TLS_SECRET}"
+    }],
+    "rules": [{
+      "host": "${INGRESS_HOSTNAME}",
+      "http": ${CURRENT_HTTP}
+    }]
+  }
+}
+PATCH
+)" && log_success "  ${ing_name}: TLS enabled" || log_warning "  Failed to patch ${ing_name}"
+    done
+
+    # Remove the bootstrap ingress (created by 04-enable-tls.sh Mode A)
+    kubectl delete ingress osmo-tls-bootstrap -n "${OSMO_NAMESPACE}" --ignore-not-found 2>/dev/null
+    log_success "Ingress TLS patching complete"
+fi
+
+# -----------------------------------------------------------------------------
 # Step 9: Patch Deployments to Add vault-secrets Volume
 # -----------------------------------------------------------------------------
 # NOTE: The Helm chart's extraVolumes/extraVolumeMounts values don't work reliably.
@@ -1302,12 +1350,15 @@ INGRESS_URL=$(detect_service_url 2>/dev/null || true)
 if [[ -n "${OSMO_INGRESS_BASE_URL:-}" ]]; then
     TARGET_SERVICE_URL="${OSMO_INGRESS_BASE_URL}"
     log_info "Using explicit Ingress base URL: ${TARGET_SERVICE_URL}"
+elif [[ "$TLS_ENABLED" == "true" && -n "$INGRESS_HOSTNAME" ]]; then
+    TARGET_SERVICE_URL="https://${INGRESS_HOSTNAME}"
+    log_info "TLS detected, using HTTPS: ${TARGET_SERVICE_URL}"
 elif [[ -n "$INGRESS_URL" ]]; then
     TARGET_SERVICE_URL="${INGRESS_URL}"
     log_info "Auto-detected service URL: ${TARGET_SERVICE_URL}"
 else
     log_warning "Could not detect Ingress URL. Skipping service_base_url configuration."
-    log_warning "Run ./07-configure-service-url.sh manually after verifying the Ingress."
+    log_warning "Run ./08-configure-service-url.sh manually after verifying the Ingress."
     TARGET_SERVICE_URL=""
 fi
 
@@ -1359,18 +1410,18 @@ SVCEOF
                     if [[ "$NEW_SVC_URL" == "$TARGET_SERVICE_URL" ]]; then
                         log_success "service_base_url configured: ${NEW_SVC_URL}"
                     else
-                        log_warning "service_base_url verification failed. Run ./07-configure-service-url.sh manually."
+                        log_warning "service_base_url verification failed. Run ./08-configure-service-url.sh manually."
                     fi
                 else
-                    log_warning "Failed to set service_base_url. Run ./07-configure-service-url.sh manually."
+                    log_warning "Failed to set service_base_url. Run ./08-configure-service-url.sh manually."
                 fi
                 rm -f /tmp/service_url_fix.json
             fi
         else
-            log_warning "Could not login to OSMO. Run ./07-configure-service-url.sh manually."
+            log_warning "Could not login to OSMO. Run ./08-configure-service-url.sh manually."
         fi
     else
-        log_warning "Port-forward not ready. Run ./07-configure-service-url.sh manually."
+        log_warning "Port-forward not ready. Run ./08-configure-service-url.sh manually."
     fi
 
     _cleanup_pf
@@ -1382,7 +1433,13 @@ log_success "OSMO Control Plane deployment complete!"
 echo "========================================"
 echo ""
 
-if [[ -n "$INGRESS_URL" ]]; then
+if [[ "$TLS_ENABLED" == "true" && -n "$INGRESS_HOSTNAME" ]]; then
+    echo "OSMO Access (HTTPS via NGINX Ingress + cert-manager):"
+    echo "  OSMO API: https://${INGRESS_HOSTNAME}/api/version"
+    echo "  OSMO UI:  https://${INGRESS_HOSTNAME}"
+    echo "  OSMO CLI: osmo login https://${INGRESS_HOSTNAME} --method dev --username admin"
+    echo ""
+elif [[ -n "$INGRESS_URL" ]]; then
     echo "OSMO Access (via NGINX Ingress LoadBalancer):"
     echo "  OSMO API: ${INGRESS_URL}/api/version"
     echo "  OSMO UI:  ${INGRESS_URL}"
@@ -1422,5 +1479,5 @@ echo "Ingress resources:"
 kubectl get ingress -n "${OSMO_NAMESPACE}" 2>/dev/null || true
 echo ""
 echo "Next step - Deploy Backend Operator:"
-echo "  ./05-deploy-osmo-backend.sh"
+echo "  ./06-deploy-osmo-backend.sh"
 echo ""

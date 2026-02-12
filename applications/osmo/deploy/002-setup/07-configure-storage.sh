@@ -64,7 +64,7 @@ if ! kubectl get secret osmo-storage -n osmo &>/dev/null; then
     if [[ -z "$S3_ACCESS_KEY" || -z "$S3_SECRET_KEY" ]]; then
         log_error "Could not retrieve storage credentials"
         echo ""
-        echo "Either re-run 04-deploy-osmo-control-plane.sh or create the secret manually:"
+        echo "Either re-run 05-deploy-osmo-control-plane.sh or create the secret manually:"
         echo ""
         echo "  kubectl create secret generic osmo-storage \\"
         echo "    --namespace osmo \\"

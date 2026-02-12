@@ -75,11 +75,14 @@ cd 002-setup
 # 3. Deploy NGINX Ingress Controller
 ./03-deploy-nginx-ingress.sh
 
-# 4. Deploy OSMO control plane
-./04-deploy-osmo-control-plane.sh
+# 4. Enable TLS (optional, recommended – set up DNS A record first)
+./04-enable-tls.sh <hostname>
 
-# 5. Deploy OSMO backend
-./05-deploy-osmo-backend.sh
+# 5. Deploy OSMO control plane
+./05-deploy-osmo-control-plane.sh
+
+# 6. Deploy OSMO backend
+./06-deploy-osmo-backend.sh
 ```
 
 ## Directory Structure
@@ -110,8 +113,9 @@ deploy/
     ├── 01-deploy-gpu-infrastructure.sh
     ├── 02-deploy-observability.sh
     ├── 03-deploy-nginx-ingress.sh
-    ├── 04-deploy-osmo-control-plane.sh
-    ├── 05-deploy-osmo-backend.sh
+    ├── 04-enable-tls.sh
+    ├── 05-deploy-osmo-control-plane.sh
+    ├── 06-deploy-osmo-backend.sh
     ├── cleanup/                  # Uninstall scripts
     └── README.md
 ```
