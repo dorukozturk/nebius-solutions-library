@@ -6,8 +6,8 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib/common.sh"
+source "${SCRIPT_DIR}/defaults.sh"
 
-OSMO_URL="${OSMO_URL:-http://localhost:8080}"
 OSMO_NAMESPACE="${OSMO_NAMESPACE:-osmo}"
 
 echo ""
@@ -20,12 +20,11 @@ echo ""
 check_kubectl || exit 1
 
 # -----------------------------------------------------------------------------
-# Start port-forward
+# Start port-forward (auto-detects Envoy and bypasses if needed)
 # -----------------------------------------------------------------------------
 log_info "Starting port-forward to OSMO service..."
-
-kubectl port-forward -n "${OSMO_NAMESPACE}" svc/osmo-service 8080:80 &>/dev/null &
-PORT_FORWARD_PID=$!
+start_osmo_port_forward "${OSMO_NAMESPACE}" 8080
+export _OSMO_PORT=8080
 
 cleanup_port_forward() {
     if [[ -n "${PORT_FORWARD_PID:-}" ]]; then
@@ -35,29 +34,68 @@ cleanup_port_forward() {
 }
 trap cleanup_port_forward EXIT
 
-# Wait for port-forward to be ready
+OSMO_URL="http://localhost:8080"
+
+# Wait for port-forward to be ready (reject 302 — that means Envoy redirect, not direct)
 log_info "Waiting for port-forward to be ready..."
 max_wait=30
 elapsed=0
-while ! curl -s -o /dev/null -w "%{http_code}" "${OSMO_URL}/api/version" 2>/dev/null | grep -q "200\|401\|403"; do
+while true; do
+    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${OSMO_URL}/api/version" 2>/dev/null || echo "000")
+    if [[ "$HTTP_CODE" == "200" ]]; then
+        break
+    fi
     sleep 1
     ((elapsed += 1))
     if [[ $elapsed -ge $max_wait ]]; then
-        log_error "Port-forward failed to start within ${max_wait}s"
+        log_error "Port-forward failed to start within ${max_wait}s (last HTTP: ${HTTP_CODE})"
         exit 1
     fi
 done
 log_success "Port-forward ready"
+
+# Login (no-op when bypassing Envoy)
+osmo_login 8080
+
+# -----------------------------------------------------------------------------
+# Step 0: Label nodes with OSMO pool/platform
+# -----------------------------------------------------------------------------
+# OSMO discovers resources via node labels:
+#   osmo.nvidia.com/pool=<pool>        — assigns node to a pool
+#   osmo.nvidia.com/platform=<platform> — assigns node to a platform within the pool
+# GPU nodes get platform=gpu, CPU-only nodes get platform=default.
+log_info "Labeling nodes with OSMO pool/platform..."
+
+NODE_COUNT=0
+GPU_NODE_COUNT=0
+for node in $(kubectl get nodes -o jsonpath='{.items[*].metadata.name}'); do
+    has_gpu=$(kubectl get node "$node" -o jsonpath='{.metadata.labels.nvidia\.com/gpu\.present}' 2>/dev/null)
+    gpu_count=$(kubectl get node "$node" -o jsonpath='{.status.allocatable.nvidia\.com/gpu}' 2>/dev/null)
+
+    kubectl label node "$node" osmo.nvidia.com/pool=default --overwrite &>/dev/null
+
+    if [[ "$has_gpu" == "true" ]] || [[ -n "$gpu_count" && "$gpu_count" -gt 0 ]] 2>/dev/null; then
+        kubectl label node "$node" osmo.nvidia.com/platform=gpu --overwrite &>/dev/null
+        ((GPU_NODE_COUNT++)) || true
+    else
+        kubectl label node "$node" osmo.nvidia.com/platform=default --overwrite &>/dev/null
+    fi
+    ((NODE_COUNT++)) || true
+done
+
+log_success "Labeled ${NODE_COUNT} nodes (${GPU_NODE_COUNT} GPU, $((NODE_COUNT - GPU_NODE_COUNT)) CPU-only)"
+
+# Give the backend listener time to process node label changes
+sleep 5
 
 # -----------------------------------------------------------------------------
 # Step 1: Create GPU pod template
 # -----------------------------------------------------------------------------
 log_info "Creating gpu_tolerations pod template..."
 
-RESPONSE=$(curl -s -w "\n%{http_code}" -X PUT \
-  "${OSMO_URL}/api/configs/pod_template/gpu_tolerations" \
-  -H "Content-Type: application/json" \
-  -d @"${SCRIPT_DIR}/gpu_pod_template.json")
+RESPONSE=$(osmo_curl PUT "${OSMO_URL}/api/configs/pod_template/gpu_tolerations" \
+  -d @"${SCRIPT_DIR}/gpu_pod_template.json" \
+  -w "\n%{http_code}")
 HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
 BODY=$(echo "$RESPONSE" | sed '$d')
 
@@ -74,10 +112,9 @@ fi
 # -----------------------------------------------------------------------------
 log_info "Creating gpu platform in default pool..."
 
-RESPONSE=$(curl -s -w "\n%{http_code}" -X PUT \
-  "${OSMO_URL}/api/configs/pool/default/platform/gpu" \
-  -H "Content-Type: application/json" \
-  -d @"${SCRIPT_DIR}/gpu_platform_update.json")
+RESPONSE=$(osmo_curl PUT "${OSMO_URL}/api/configs/pool/default/platform/gpu" \
+  -d @"${SCRIPT_DIR}/gpu_platform_update.json" \
+  -w "\n%{http_code}")
 HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
 BODY=$(echo "$RESPONSE" | sed '$d')
 
@@ -96,11 +133,11 @@ log_info "Verifying configuration..."
 
 echo ""
 echo "Pod templates:"
-curl -s "${OSMO_URL}/api/configs/pod_template" | jq 'keys'
+osmo_curl GET "${OSMO_URL}/api/configs/pod_template" | jq 'keys'
 
 echo ""
 echo "GPU platform config:"
-curl -s "${OSMO_URL}/api/configs/pool/default" | jq '.platforms.gpu'
+osmo_curl GET "${OSMO_URL}/api/configs/pool/default" | jq '.platforms.gpu'
 
 # -----------------------------------------------------------------------------
 # Step 4: Check GPU resources
@@ -108,13 +145,13 @@ curl -s "${OSMO_URL}/api/configs/pool/default" | jq '.platforms.gpu'
 log_info "Checking GPU resources..."
 sleep 3  # Wait for backend to pick up changes
 
-RESOURCE_COUNT=$(curl -s "${OSMO_URL}/api/resources" | jq '[.resources[] | select(.allocatable_fields.gpu != null)] | length')
+RESOURCE_COUNT=$(osmo_curl GET "${OSMO_URL}/api/resources" | jq '[.resources[] | select(.allocatable_fields.gpu != null)] | length')
 echo "GPU nodes visible to OSMO: ${RESOURCE_COUNT}"
 
 if [[ "$RESOURCE_COUNT" -gt 0 ]]; then
     echo ""
     echo "GPU resources:"
-    curl -s "${OSMO_URL}/api/resources" | jq '.resources[] | select(.allocatable_fields.gpu != null) | {name: .name, gpu: .allocatable_fields.gpu, cpu: .allocatable_fields.cpu, memory: .allocatable_fields.memory}'
+    osmo_curl GET "${OSMO_URL}/api/resources" | jq '.resources[] | select(.allocatable_fields.gpu != null) | {name: .name, gpu: .allocatable_fields.gpu, cpu: .allocatable_fields.cpu, memory: .allocatable_fields.memory}'
 fi
 
 # -----------------------------------------------------------------------------
@@ -127,3 +164,4 @@ echo "  osmo workflow submit workflows/osmo/gpu_test.yaml -p default"
 echo ""
 echo "Or test via curl:"
 echo "  curl -X POST ${OSMO_URL}/api/workflow -H 'Content-Type: application/yaml' --data-binary @workflows/osmo/gpu_test.yaml"
+echo ""

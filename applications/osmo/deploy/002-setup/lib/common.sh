@@ -289,6 +289,13 @@ start_osmo_port_forward() {
     local ns="${1:-osmo}"
     local local_port="${2:-8080}"
 
+    # Kill any stale port-forward on the target port (e.g. from a previous sourced run)
+    if command -v lsof &>/dev/null && lsof -ti :"$local_port" &>/dev/null; then
+        log_warning "Port ${local_port} already in use — killing stale process"
+        kill $(lsof -ti :"$local_port") 2>/dev/null || true
+        sleep 1
+    fi
+
     if has_envoy_sidecar "$ns" "app=osmo-service"; then
         log_info "Envoy sidecar detected — port-forwarding to pod:8000 (bypass Envoy)"
         local pod_name
