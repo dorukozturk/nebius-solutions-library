@@ -24,9 +24,9 @@ check_kubectl || exit 1
 # -----------------------------------------------------------------------------
 log_info "Starting port-forward to OSMO service..."
 
-# Start port-forward using shared helper (auto-detects Envoy)
-start_osmo_port_forward osmo 8080
-export _OSMO_PORT=8080
+OSMO_NS="${OSMO_NAMESPACE:-osmo}"
+
+start_osmo_port_forward "${OSMO_NS}" 8080
 
 cleanup_port_forward() {
     if [[ -n "${PORT_FORWARD_PID:-}" ]]; then
@@ -40,11 +40,7 @@ trap cleanup_port_forward EXIT
 log_info "Waiting for port-forward to be ready..."
 max_wait=30
 elapsed=0
-while true; do
-    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:8080/api/version" 2>/dev/null || echo "000")
-    if [[ "$HTTP_CODE" == "200" ]]; then
-        break
-    fi
+while ! curl -s -o /dev/null -w "%{http_code}" "http://localhost:8080/api/version" 2>/dev/null | grep -q "200\|401\|403"; do
     sleep 1
     ((elapsed += 1))
     if [[ $elapsed -ge $max_wait ]]; then
@@ -54,13 +50,8 @@ while true; do
 done
 log_success "Port-forward ready"
 
-# Login (no-op when bypassing Envoy)
-log_info "Logging in to OSMO..."
-if ! osmo_login 8080; then
-    log_error "Failed to login to OSMO"
-    exit 1
-fi
-log_success "Logged in successfully"
+# Login (no-op when bypassing Envoy -- curl headers handle auth)
+osmo_login 8080 || exit 1
 
 # -----------------------------------------------------------------------------
 # Determine the target service URL
@@ -79,7 +70,11 @@ elif DETECTED_URL=$(detect_service_url 2>/dev/null) && [[ -n "$DETECTED_URL" ]];
 else
     log_error "Could not detect NGINX Ingress Controller URL."
     log_error "Ensure 03-deploy-nginx-ingress.sh was run and the LoadBalancer has an IP."
-    log_error "Or set OSMO_INGRESS_BASE_URL manually: export OSMO_INGRESS_BASE_URL=http://<lb-ip>"
+    if [[ "${OSMO_TLS_ENABLED:-false}" == "true" ]]; then
+        log_error "Or set OSMO_INGRESS_BASE_URL manually: export OSMO_INGRESS_BASE_URL=https://<your-domain>"
+    else
+        log_error "Or set OSMO_INGRESS_BASE_URL manually: export OSMO_INGRESS_BASE_URL=http://<lb-ip>"
+    fi
     exit 1
 fi
 

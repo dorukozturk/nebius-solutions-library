@@ -65,7 +65,7 @@ if ! kubectl get secret osmo-storage -n osmo &>/dev/null; then
     if [[ -z "$S3_ACCESS_KEY" || -z "$S3_SECRET_KEY" ]]; then
         log_error "Could not retrieve storage credentials"
         echo ""
-        echo "Either re-run 05-deploy-osmo-control-plane.sh or create the secret manually:"
+        echo "Either re-run 04-deploy-osmo-control-plane.sh or create the secret manually:"
         echo ""
         echo "  kubectl create secret generic osmo-storage \\"
         echo "    --namespace osmo \\"
@@ -91,9 +91,9 @@ fi
 # -----------------------------------------------------------------------------
 log_info "Starting port-forward to OSMO service..."
 
-# Start port-forward using shared helper (auto-detects Envoy)
-start_osmo_port_forward osmo 8080
-export _OSMO_PORT=8080
+OSMO_NS="${OSMO_NAMESPACE:-osmo}"
+
+start_osmo_port_forward "${OSMO_NS}" 8080
 
 # Cleanup function
 cleanup_port_forward() {
@@ -108,11 +108,7 @@ trap cleanup_port_forward EXIT
 log_info "Waiting for port-forward to be ready..."
 max_wait=30
 elapsed=0
-while true; do
-    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:8080/api/version" 2>/dev/null || echo "000")
-    if [[ "$HTTP_CODE" == "200" ]]; then
-        break
-    fi
+while ! curl -s -o /dev/null -w "%{http_code}" "http://localhost:8080/api/version" 2>/dev/null | grep -q "200\|401\|403"; do
     sleep 1
     ((elapsed += 1))
     if [[ $elapsed -ge $max_wait ]]; then
@@ -122,13 +118,8 @@ while true; do
 done
 log_success "Port-forward ready"
 
-# Login (no-op when bypassing Envoy)
-log_info "Logging in to OSMO..."
-if ! osmo_login 8080; then
-    log_error "Failed to login to OSMO"
-    exit 1
-fi
-log_success "Logged in successfully"
+# Login (no-op when bypassing Envoy -- curl headers handle auth)
+osmo_login 8080 || exit 1
 
 # -----------------------------------------------------------------------------
 # Get Storage Credentials
@@ -175,7 +166,7 @@ WORKFLOW_LOG_CONFIG=$(cat <<EOF
 EOF
 )
 
-# Write to temp file
+# Write to temp file for osmo CLI
 echo "$WORKFLOW_LOG_CONFIG" > /tmp/workflow_log_config.json
 
 if osmo_config_update WORKFLOW /tmp/workflow_log_config.json "Configure workflow log storage"; then
@@ -206,7 +197,7 @@ WORKFLOW_DATA_CONFIG=$(cat <<EOF
 EOF
 )
 
-# Write to temp file
+# Write to temp file for osmo CLI
 echo "$WORKFLOW_DATA_CONFIG" > /tmp/workflow_data_config.json
 
 if osmo_config_update WORKFLOW /tmp/workflow_data_config.json "Configure workflow data storage"; then
@@ -227,8 +218,7 @@ log_info "Verifying storage configuration..."
 
 echo ""
 echo "Workflow configuration:"
-osmo config show WORKFLOW 2>/dev/null || \
-    osmo_curl GET "http://localhost:8080/api/configs/workflow" 2>/dev/null | jq '.' || \
+osmo_curl GET "http://localhost:8080/api/configs/workflow" 2>/dev/null | jq '.' || \
     log_warning "Could not retrieve workflow config for verification"
 
 # Cleanup

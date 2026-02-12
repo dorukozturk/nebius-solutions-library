@@ -331,13 +331,7 @@ log_success "Databases verified and ready"
 # -----------------------------------------------------------------------------
 log_info "Creating secrets..."
 
-# Database secret for Keycloak (only if Keycloak is being deployed)
-if [[ "${DEPLOY_KEYCLOAK:-false}" == "true" ]]; then
-    kubectl create secret generic keycloak-db-secret \
-        --namespace "${KEYCLOAK_NAMESPACE}" \
-        --from-literal=postgres-password="${POSTGRES_PASSWORD}" \
-        --dry-run=client -o yaml | kubectl apply -f -
-fi
+# keycloak-db-secret is created later in Step 4 when DEPLOY_KEYCLOAK=true (with other Keycloak secrets)
 
 # Create the postgres-secret that OSMO chart expects
 # The chart looks for passwordSecretName: postgres-secret, passwordSecretKey: password
@@ -430,24 +424,6 @@ meks:
 
 log_success "MEK secrets created"
 
-# If the MEK was regenerated (new key), OSMO's encrypted signing keys in the DB
-# will be invalid (encrypted with the old MEK). Delete stale service_auth so OSMO
-# re-generates signing keys on next startup with the current MEK.
-# This is safe on first deploy (no-op) and on re-runs (idempotent).
-if [[ -n "${POSTGRES_HOST:-}" && -n "${POSTGRES_PASSWORD:-}" ]]; then
-    log_info "Clearing stale JWT signing keys (will be regenerated on startup)..."
-    kubectl run osmo-mek-key-reset --namespace "${OSMO_NAMESPACE}" \
-        --image=postgres:16-alpine --restart=Never \
-        --env="PGPASSWORD=${POSTGRES_PASSWORD}" \
-        --command -- sh -c "psql -h '${POSTGRES_HOST}' -p '${POSTGRES_PORT:-5432}' \
-            -U '${POSTGRES_USER:-osmo_admin}' -d osmo \
-            -c \"DELETE FROM configs WHERE key = 'service_auth' AND type = 'SERVICE';\" 2>/dev/null || true" \
-        2>/dev/null || true
-    kubectl wait --for=condition=Ready pod/osmo-mek-key-reset -n "${OSMO_NAMESPACE}" --timeout=30s 2>/dev/null || true
-    sleep 5
-    kubectl delete pod osmo-mek-key-reset -n "${OSMO_NAMESPACE}" --force 2>/dev/null || true
-fi
-
 # -----------------------------------------------------------------------------
 # Step 3.5: Deploy Redis (Required for OSMO rate limiting)
 # -----------------------------------------------------------------------------
@@ -477,29 +453,18 @@ REDIS_HOST="redis-master.${OSMO_NAMESPACE}.svc.cluster.local"
 # Required for: osmo login, osmo token, backend operator
 # Reference: https://nvidia.github.io/OSMO/main/deployment_guide/getting_started/deploy_service.html#step-2-configure-keycloak
 
-# Auto-detect TLS certificate early (needed for KC_EXTERNAL decision below)
-TLS_SECRET="${OSMO_TLS_SECRET_NAME:-osmo-tls}"
-TLS_ENABLED="false"
-if kubectl get secret "${TLS_SECRET}" -n "${OSMO_NAMESPACE}" &>/dev/null; then
-    log_info "TLS certificate detected (${TLS_SECRET})"
-    TLS_ENABLED="true"
-elif kubectl get certificate "${TLS_SECRET}" -n "${OSMO_NAMESPACE}" &>/dev/null; then
-    log_info "TLS certificate pending (${TLS_SECRET})"
-    TLS_ENABLED="true"
-fi
-
 # Keycloak service URL (same namespace as OSMO)
 KEYCLOAK_HOST="keycloak.${OSMO_NAMESPACE}.svc.cluster.local"
 KEYCLOAK_URL="http://${KEYCLOAK_HOST}:80"
 
 # Derive Keycloak external hostname
-# Priority: KEYCLOAK_HOSTNAME env var > auto-derive from OSMO_INGRESS_HOSTNAME > OSMO_DOMAIN
+# Priority: KEYCLOAK_HOSTNAME env var > auto-derive from OSMO_INGRESS_HOSTNAME
 if [[ -n "${KEYCLOAK_HOSTNAME:-}" ]]; then
     AUTH_DOMAIN="${KEYCLOAK_HOSTNAME}"
 elif [[ -n "${OSMO_INGRESS_HOSTNAME:-}" ]]; then
-    AUTH_DOMAIN="auth.${OSMO_INGRESS_HOSTNAME}"
+    AUTH_DOMAIN="auth-${OSMO_INGRESS_HOSTNAME}"
 else
-    AUTH_DOMAIN="auth.${OSMO_DOMAIN}"
+    AUTH_DOMAIN="auth-${OSMO_DOMAIN}"
 fi
 KC_TLS_SECRET="${KEYCLOAK_TLS_SECRET_NAME:-osmo-tls-auth}"
 
@@ -510,52 +475,49 @@ if [[ "${DEPLOY_KEYCLOAK:-false}" == "true" ]]; then
     # Keycloak database was already created in Step 2 (osmo-db-init pod) when DEPLOY_KEYCLOAK=true
 
     # -------------------------------------------------------------------------
-    # Step 4a: Create secrets for Keycloak
+    # Step 1: Create secrets for Keycloak
     # -------------------------------------------------------------------------
     log_info "Creating Keycloak secrets..."
-
+    
     # Save admin password to secret for future re-runs
     kubectl create secret generic keycloak-admin-secret \
         --namespace "${OSMO_NAMESPACE}" \
         --from-literal=password="${KEYCLOAK_ADMIN_PASSWORD}" \
         --dry-run=client -o yaml | kubectl apply -f -
-
+    
     # Create keycloak-db-secret for external database (per OSMO docs)
+    # Uses the managed PostgreSQL credentials
     kubectl create secret generic keycloak-db-secret \
         --namespace "${OSMO_NAMESPACE}" \
         --from-literal=postgres-password="${POSTGRES_PASSWORD}" \
         --dry-run=client -o yaml | kubectl apply -f -
-
+    
     log_success "Keycloak secrets created"
 
     # -------------------------------------------------------------------------
-    # Step 4b: Determine if Keycloak should use external TLS ingress
+    # Step 2: Install Keycloak using Bitnami Helm chart
+    # Per OSMO docs: https://nvidia.github.io/OSMO/main/deployment_guide/getting_started/deploy_service.html#install-keycloak-using-bitnami-helm-chart
     # -------------------------------------------------------------------------
+    log_info "Installing Keycloak using Bitnami Helm chart..."
+    
+    # Add Bitnami repo
+    helm repo add bitnami https://charts.bitnami.com/bitnami --force-update 2>/dev/null || true
+    helm repo update bitnami
+    
+    # Determine if Keycloak should use external TLS ingress
     KC_EXTERNAL="false"
-    if [[ "$TLS_ENABLED" == "true" && -n "${OSMO_INGRESS_HOSTNAME:-}" ]]; then
+    if [[ "${OSMO_TLS_ENABLED:-false}" == "true" && -n "${OSMO_INGRESS_HOSTNAME:-}" ]]; then
         # Check TLS secret for auth domain exists
         if kubectl get secret "${KC_TLS_SECRET}" -n "${OSMO_NAMESPACE}" &>/dev/null || \
            kubectl get secret "${KC_TLS_SECRET}" -n "${INGRESS_NAMESPACE:-ingress-nginx}" &>/dev/null; then
             KC_EXTERNAL="true"
             log_info "Keycloak will be exposed externally at: https://${AUTH_DOMAIN}"
-        elif kubectl get certificate "${KC_TLS_SECRET}" -n "${OSMO_NAMESPACE}" &>/dev/null; then
-            KC_EXTERNAL="true"
-            log_info "Keycloak TLS certificate pending — will create external ingress"
         else
             log_warning "TLS secret '${KC_TLS_SECRET}' for Keycloak not found."
-            log_warning "Run: DEPLOY_KEYCLOAK=true ./04-enable-tls.sh ${OSMO_INGRESS_HOSTNAME}"
+            log_warning "Run: OSMO_INGRESS_HOSTNAME=${AUTH_DOMAIN} OSMO_TLS_SECRET_NAME=${KC_TLS_SECRET} ./03a-setup-tls-certificate.sh"
             log_warning "Keycloak will be internal-only (port-forward access)"
         fi
     fi
-
-    # -------------------------------------------------------------------------
-    # Step 4c: Install Keycloak using Bitnami Helm chart
-    # -------------------------------------------------------------------------
-    log_info "Installing Keycloak using Bitnami Helm chart..."
-
-    # Add Bitnami repo
-    helm repo add bitnami https://charts.bitnami.com/bitnami --force-update 2>/dev/null || true
-    helm repo update bitnami
 
     # Create keycloak-values.yaml per OSMO documentation
     cat > /tmp/keycloak-values.yaml <<EOF
@@ -575,6 +537,7 @@ image:
 $(if [[ "$KC_EXTERNAL" == "true" ]]; then
 cat <<KC_PROD
 # Production mode with TLS termination at NGINX ingress (proxy=edge)
+# Keycloak itself runs plain HTTP; TLS is handled by the NGINX Ingress controller.
 production: true
 proxy: edge
 proxyHeaders: xforwarded
@@ -659,7 +622,8 @@ extraEnvVars:
     value: "admin"
   - name: KEYCLOAK_ADMIN_PASSWORD
     value: "${KEYCLOAK_ADMIN_PASSWORD}"
-  # Database configuration (Bitnami entrypoint uses KEYCLOAK_DATABASE_* vars)
+  # Database configuration (using Nebius Managed PostgreSQL)
+  # Bitnami entrypoint uses KEYCLOAK_DATABASE_* vars; KC_DB_* are Keycloak-native.
   - name: KEYCLOAK_DATABASE_HOST
     value: "${POSTGRES_HOST}"
   - name: KEYCLOAK_DATABASE_PORT
@@ -670,7 +634,6 @@ extraEnvVars:
     value: "${POSTGRES_USER}"
   - name: KEYCLOAK_DATABASE_PASSWORD
     value: "${POSTGRES_PASSWORD}"
-  # Keycloak-native database configuration
   - name: KC_DB
     value: "postgres"
   - name: KC_DB_URL_HOST
@@ -709,20 +672,27 @@ fi)
     value: "true"
 EOF
 
+    # Remove the TLS bootstrap ingress for the auth subdomain (if it exists).
+    # It was created by 04-enable-tls.sh solely to trigger the cert-manager HTTP-01
+    # challenge. If left in place, the NGINX admission webhook rejects the Keycloak
+    # chart's ingress for the same host+path.
+    kubectl delete ingress osmo-tls-auth-bootstrap -n "${OSMO_NAMESPACE}" --ignore-not-found 2>/dev/null || true
+
     # Install or upgrade Keycloak
+    # Note: Don't use --wait as it can hang; we'll check status separately
     helm upgrade --install keycloak bitnami/keycloak \
         --namespace "${OSMO_NAMESPACE}" \
         -f /tmp/keycloak-values.yaml \
         --timeout 10m || {
         log_warning "Helm install returned non-zero, checking pod status..."
     }
-
+    
     rm -f /tmp/keycloak-values.yaml
     log_success "Keycloak Helm release installed"
-
+    
     # Wait for Keycloak to be ready
     log_info "Waiting for Keycloak to be ready (this may take 3-5 minutes)..."
-
+    
     # Wait for the pod to exist first
     for i in {1..30}; do
         if kubectl get pods -n "${OSMO_NAMESPACE}" -l app.kubernetes.io/name=keycloak 2>/dev/null | grep -q keycloak; then
@@ -731,94 +701,28 @@ EOF
         echo "  Waiting for Keycloak pod to be created... ($i/30)"
         sleep 5
     done
-
+    
     # Now wait for it to be ready
     kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=keycloak \
         -n "${OSMO_NAMESPACE}" --timeout=300s || {
         log_warning "Keycloak pod not ready yet, checking logs..."
         kubectl logs -n "${OSMO_NAMESPACE}" -l app.kubernetes.io/name=keycloak --tail=30 || true
     }
-
+    
     # Additional wait for Keycloak to fully initialize
     log_info "Waiting for Keycloak to fully initialize..."
     sleep 30
-
-    # -------------------------------------------------------------------------
-    # Step 4c.1: Verify admin password works (handle stale DB)
-    # -------------------------------------------------------------------------
-    # KC_BOOTSTRAP_ADMIN_* only creates the admin user on FIRST database init.
-    # If the keycloak DB already existed (e.g. from a prior deployment with a
-    # different password), the bootstrap is a no-op and the stored password
-    # won't match. We detect this and reset the password via SQL.
-    log_info "Verifying Keycloak admin password..."
-
-    KC_POD=$(kubectl get pods -n "${OSMO_NAMESPACE}" -l app.kubernetes.io/name=keycloak \
-        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-
-    if [[ -n "$KC_POD" ]]; then
-        KC_TOKEN_RESP=$(kubectl exec -n "${OSMO_NAMESPACE}" "${KC_POD}" -- \
-            curl -s -X POST http://localhost:8080/realms/master/protocol/openid-connect/token \
-            -d "client_id=admin-cli" \
-            -d "username=admin" \
-            -d "password=${KEYCLOAK_ADMIN_PASSWORD}" \
-            -d "grant_type=password" 2>/dev/null || echo "")
-
-        if echo "$KC_TOKEN_RESP" | grep -q "access_token"; then
-            log_success "Keycloak admin password verified"
-        else
-            log_warning "Admin password mismatch (stale keycloak DB). Resetting via SQL..."
-            # Use the db-init credentials to reset the admin password in the keycloak DB
-            # Keycloak 26.x stores bcrypt hashes. We use the Keycloak KC_SPI approach instead:
-            # Drop and recreate the keycloak database, then restart Keycloak so bootstrap runs fresh.
-            kubectl delete pod osmo-kc-db-reset -n "${OSMO_NAMESPACE}" --ignore-not-found 2>/dev/null
-            kubectl run osmo-kc-db-reset \
-                --namespace "${OSMO_NAMESPACE}" \
-                --image=postgres:16-alpine \
-                --restart=Never \
-                --env="PGPASSWORD=${POSTGRES_PASSWORD}" \
-                --env="PGHOST=${POSTGRES_HOST}" \
-                --env="PGPORT=${POSTGRES_PORT}" \
-                --env="PGUSER=${POSTGRES_USER}" \
-                --env="PGDATABASE=${POSTGRES_DB}" \
-                --command -- sh -c '
-                    echo "Dropping keycloak database..."
-                    psql -c "DROP DATABASE IF EXISTS keycloak;"
-                    echo "Recreating keycloak database..."
-                    psql -c "CREATE DATABASE keycloak;"
-                    echo "Done"
-                ' >/dev/null 2>&1
-
-            # Wait for reset pod
-            for i in $(seq 1 30); do
-                _rst_status=$(kubectl get pod osmo-kc-db-reset -n "${OSMO_NAMESPACE}" \
-                    -o jsonpath='{.status.phase}' 2>/dev/null || echo "Pending")
-                [[ "$_rst_status" == "Succeeded" || "$_rst_status" == "Failed" ]] && break
-                sleep 2
-            done
-            kubectl logs osmo-kc-db-reset -n "${OSMO_NAMESPACE}" 2>/dev/null || true
-            kubectl delete pod osmo-kc-db-reset -n "${OSMO_NAMESPACE}" --ignore-not-found 2>/dev/null
-
-            if [[ "$_rst_status" == "Succeeded" ]]; then
-                log_info "Keycloak DB reset. Restarting Keycloak pod for fresh bootstrap..."
-                kubectl delete pod -n "${OSMO_NAMESPACE}" -l app.kubernetes.io/name=keycloak --wait=false
-                sleep 10
-                kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=keycloak \
-                    -n "${OSMO_NAMESPACE}" --timeout=300s || log_warning "Keycloak pod not ready after restart"
-                log_info "Waiting for Keycloak to fully initialize after restart..."
-                sleep 20
-                log_success "Keycloak restarted with fresh DB (admin password will match)"
-            else
-                log_error "Failed to reset keycloak DB. Admin password may not work."
-                log_error "Manually reset: psql -h ${POSTGRES_HOST} -U ${POSTGRES_USER} -d ${POSTGRES_DB} -c 'DROP DATABASE keycloak; CREATE DATABASE keycloak;'"
-            fi
-        fi
-    fi
-
-    # -------------------------------------------------------------------------
-    # Step 4d: Import OSMO realm using official sample_osmo_realm.json
-    # -------------------------------------------------------------------------
+    
+    # Configure Keycloak realm using the official OSMO realm JSON
+    # Source: https://nvidia.github.io/OSMO/main/deployment_guide/getting_started/deploy_service.html#post-installation-keycloak-configuration
+    # The official sample_osmo_realm.json includes everything needed for OSMO RBAC:
+    #   - Roles:    osmo-user, osmo-admin, osmo-backend, grafana-*, dashboard-*
+    #   - Groups:   Admin, User, Backend Operator (with proper client-role mappings)
+    #   - Clients:  osmo-device (public, device code flow), osmo-browser-flow (confidential, auth code)
+    #   - Mappers:  "Create roles claim" protocol mapper on both clients (JWT roles claim)
+    #   - Scopes:   Standard OIDC scopes (profile, email, roles, etc.)
     log_info "Configuring Keycloak realm using official OSMO realm JSON..."
-
+    
     # Generate client secret for osmo-browser-flow (confidential client)
     OIDC_CLIENT_SECRET=$(openssl rand -hex 16)
 
@@ -828,14 +732,14 @@ EOF
     else
         OSMO_BASE_URL="http://localhost:8080"
     fi
-
+    
     # Upload the official realm JSON as a ConfigMap (so the job can mount it)
     log_info "Creating ConfigMap from sample_osmo_realm.json..."
     kubectl create configmap keycloak-realm-json \
         --namespace "${OSMO_NAMESPACE}" \
         --from-file=realm.json="${SCRIPT_DIR}/sample_osmo_realm.json" \
         --dry-run=client -o yaml | kubectl apply -f -
-
+    
     # Create a job to import the realm and configure a test user
     cat > /tmp/keycloak-config-job.yaml <<EOF
 apiVersion: batch/v1
@@ -866,33 +770,31 @@ spec:
         - |
           set -e
           KEYCLOAK_URL="http://keycloak:80"
-
+          
           echo "============================================"
           echo "  OSMO Keycloak Realm Import"
           echo "============================================"
           echo ""
-
-          # -- Step 1: Prepare realm JSON --
+          
+          # ── Step 1: Prepare realm JSON ──────────────────────────
           echo "=== Step 1: Prepare realm JSON ==="
+          echo "Customising sample_osmo_realm.json for this deployment..."
           cp /data/realm.json /tmp/realm-import.json
-
-          # Replace placeholder URLs with actual OSMO URL
+          
+          # Replace placeholder URLs (https://default.com) with actual OSMO URL
           sed -i "s|https://default.com|${OSMO_BASE_URL}|g" /tmp/realm-import.json
-
+          
           # Replace masked client secret with generated secret
           sed -i 's/"secret": "[*][*]*"/"secret": "${OIDC_CLIENT_SECRET}"/' /tmp/realm-import.json
-
-          echo "  OSMO URL:   ${OSMO_BASE_URL}"
-          echo "  Realm JSON: \$(wc -c < /tmp/realm-import.json) bytes"
+          
+          echo "  OSMO URL:       ${OSMO_BASE_URL}"
+          echo "  Realm JSON:     \$(wc -c < /tmp/realm-import.json) bytes"
           echo ""
-
-          # -- Step 2: Wait for Keycloak --
+          
+          # ── Step 2: Wait for Keycloak ───────────────────────────
           echo "=== Step 2: Wait for Keycloak ==="
-          # NOTE: Keycloak 26.x serves /health/ready on the management port (9000),
-          #       NOT on the main HTTP port (8080). The K8s service exposes port 80->8080,
-          #       so /health/ready returns 404. Use /realms/master as readiness check instead.
           for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
-            if curl -s -f "\${KEYCLOAK_URL}/realms/master" > /dev/null 2>&1; then
+            if curl -s -f "\${KEYCLOAK_URL}/health/ready" > /dev/null 2>&1; then
               echo "Keycloak is ready"
               break
             fi
@@ -900,8 +802,8 @@ spec:
             sleep 15
           done
           echo ""
-
-          # -- Step 3: Get admin token --
+          
+          # ── Step 3: Get admin token ─────────────────────────────
           echo "=== Step 3: Get admin token ==="
           for i in 1 2 3 4 5; do
             TOKEN=\$(curl -s -X POST "\${KEYCLOAK_URL}/realms/master/protocol/openid-connect/token" \
@@ -913,48 +815,49 @@ spec:
             echo "  Retry \$i: waiting for token..."
             sleep 10
           done
-
+          
           if [ -z "\$TOKEN" ]; then
             echo "FATAL: Failed to get admin token"
             exit 1
           fi
           echo "Got admin token"
           echo ""
-
-          # -- Step 4: Import OSMO realm --
+          
+          # ── Step 4: Import OSMO realm ───────────────────────────
           echo "=== Step 4: Import OSMO realm ==="
-
+          
           # Delete existing realm if present (idempotent re-runs)
           REALM_STATUS=\$(curl -s -o /dev/null -w "%{http_code}" "\${KEYCLOAK_URL}/admin/realms/osmo" \
             -H "Authorization: Bearer \$TOKEN")
           if [ "\$REALM_STATUS" = "200" ]; then
-            echo "  Existing 'osmo' realm found - deleting for fresh import..."
+            echo "  Existing 'osmo' realm found – deleting for fresh import..."
             curl -s -X DELETE "\${KEYCLOAK_URL}/admin/realms/osmo" \
               -H "Authorization: Bearer \$TOKEN"
             echo "  Old realm deleted"
             sleep 5
           fi
-
+          
           echo "Importing official OSMO realm from sample_osmo_realm.json..."
           IMPORT_HTTP=\$(curl -s -o /tmp/import-resp.txt -w "%{http_code}" \
             -X POST "\${KEYCLOAK_URL}/admin/realms" \
             -H "Authorization: Bearer \$TOKEN" \
             -H "Content-Type: application/json" \
             -d @/tmp/realm-import.json)
-
+          
           if [ "\$IMPORT_HTTP" = "201" ] || [ "\$IMPORT_HTTP" = "204" ]; then
             echo "Realm imported successfully (HTTP \$IMPORT_HTTP)"
           else
             echo "WARNING: Realm import returned HTTP \$IMPORT_HTTP"
             cat /tmp/import-resp.txt 2>/dev/null || true
             echo ""
+            # Attempt partial import as fallback
             echo "Trying partial import as fallback..."
             curl -s -X POST "\${KEYCLOAK_URL}/admin/realms/osmo/partialImport" \
               -H "Authorization: Bearer \$TOKEN" \
               -H "Content-Type: application/json" \
               -d @/tmp/realm-import.json || echo "Partial import also failed"
           fi
-
+          
           # Verify realm exists
           sleep 3
           VERIFY=\$(curl -s -o /dev/null -w "%{http_code}" "\${KEYCLOAK_URL}/admin/realms/osmo" \
@@ -965,17 +868,17 @@ spec:
           fi
           echo "Realm 'osmo' verified"
           echo ""
-
-          # -- Step 5: Create test user --
+          
+          # ── Step 5: Create test user ────────────────────────────
           echo "=== Step 5: Create test user ==="
-
-          # Refresh admin token
+          
+          # Refresh admin token (import may have taken a while)
           TOKEN=\$(curl -s -X POST "\${KEYCLOAK_URL}/realms/master/protocol/openid-connect/token" \
             --data-urlencode "client_id=admin-cli" \
             --data-urlencode "username=admin" \
             --data-urlencode "password=${KEYCLOAK_ADMIN_PASSWORD}" \
             --data-urlencode "grant_type=password" | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
-
+          
           echo "Creating osmo-admin test user..."
           curl -s -X POST "\${KEYCLOAK_URL}/admin/realms/osmo/users" \
             -H "Authorization: Bearer \$TOKEN" \
@@ -990,19 +893,21 @@ spec:
               "credentials": [{"type":"password","value":"osmo-admin","temporary":false}]
             }' || echo "User may already exist"
           echo ""
-
-          # -- Step 6: Assign user to Admin group --
+          
+          # ── Step 6: Assign user to Admin group ──────────────────
           echo "=== Step 6: Assign user to Admin group ==="
-
+          
+          # Get user internal ID
           USER_ID=\$(curl -s "\${KEYCLOAK_URL}/admin/realms/osmo/users?username=osmo-admin" \
             -H "Authorization: Bearer \$TOKEN" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
-
+          
           if [ -n "\$USER_ID" ]; then
             echo "  User ID: \$USER_ID"
-
+            
+            # Get Admin group internal ID
             ADMIN_GROUP_ID=\$(curl -s "\${KEYCLOAK_URL}/admin/realms/osmo/groups?search=Admin" \
               -H "Authorization: Bearer \$TOKEN" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
-
+            
             if [ -n "\$ADMIN_GROUP_ID" ]; then
               echo "  Admin Group ID: \$ADMIN_GROUP_ID"
               curl -s -X PUT "\${KEYCLOAK_URL}/admin/realms/osmo/users/\${USER_ID}/groups/\${ADMIN_GROUP_ID}" \
@@ -1011,14 +916,14 @@ spec:
                 -d '{}' || echo "Failed to assign group"
               echo "  User 'osmo-admin' assigned to Admin group (osmo-admin + osmo-user roles)"
             else
-              echo "  WARNING: Admin group not found - user roles may need manual assignment"
+              echo "  WARNING: Admin group not found – user roles may need manual assignment"
             fi
           else
             echo "  WARNING: Could not find osmo-admin user ID"
           fi
           echo ""
-
-          # -- Done --
+          
+          # ── Done ────────────────────────────────────────────────
           echo "========================================="
           echo "  Keycloak OSMO Configuration Complete"
           echo "========================================="
@@ -1035,27 +940,27 @@ EOF
 
     # Delete any previous config job
     kubectl delete job keycloak-osmo-setup -n "${KEYCLOAK_NAMESPACE}" --ignore-not-found 2>/dev/null || true
-
+    
     kubectl apply -f /tmp/keycloak-config-job.yaml
-
+    
     log_info "Waiting for Keycloak realm import job..."
     kubectl wait --for=condition=complete job/keycloak-osmo-setup \
         -n "${KEYCLOAK_NAMESPACE}" --timeout=300s || {
         log_warning "Keycloak configuration may have failed, check logs:"
         kubectl logs -n "${KEYCLOAK_NAMESPACE}" -l job-name=keycloak-osmo-setup --tail=50 || true
     }
-
+    
     # Store the client secret for OIDC (used by Envoy sidecar)
     kubectl create secret generic oidc-secrets \
         --namespace "${OSMO_NAMESPACE}" \
         --from-literal=client_secret="${OIDC_CLIENT_SECRET}" \
         --from-literal=hmac_secret="$(openssl rand -base64 32)" \
         --dry-run=client -o yaml | kubectl apply -f -
-
+    
     # Clean up temporary files and ConfigMap
-    rm -f /tmp/keycloak-config-job.yaml
+    rm -f /tmp/keycloak-values.yaml /tmp/keycloak-config-job.yaml
     kubectl delete configmap keycloak-realm-json -n "${OSMO_NAMESPACE}" --ignore-not-found 2>/dev/null || true
-
+    
     log_success "Keycloak deployed and configured"
     echo ""
     if [[ "$KC_EXTERNAL" == "true" ]]; then
@@ -1084,11 +989,11 @@ EOF
         echo "  Token: ${KEYCLOAK_URL}/realms/osmo/protocol/openid-connect/token"
         echo "  Auth:  ${KEYCLOAK_URL}/realms/osmo/protocol/openid-connect/auth"
         echo ""
-        # Auth disabled when Keycloak is internal-only
+        # Auth disabled when Keycloak is internal-only (no Envoy, open API)
         AUTH_ENABLED="false"
         KEYCLOAK_EXTERNAL_URL=""
         log_info "Note: OSMO auth disabled (Keycloak is internal-only, no TLS ingress)"
-        log_info "To enable auth, run: DEPLOY_KEYCLOAK=true ./04-enable-tls.sh ${OSMO_INGRESS_HOSTNAME:-<hostname>}"
+        log_info "To enable auth, set up TLS for the auth subdomain and re-run."
     fi
 else
     log_info "Skipping Keycloak (set DEPLOY_KEYCLOAK=true to enable)"
@@ -1107,15 +1012,43 @@ log_info "Creating OSMO values file..."
 # When OSMO_INGRESS_HOSTNAME is empty (default), ingress matches any Host header,
 # allowing direct IP-based access. Set it to a real domain for host-based routing.
 INGRESS_HOSTNAME="${OSMO_INGRESS_HOSTNAME:-}"
+TLS_ENABLED="${OSMO_TLS_ENABLED:-false}"
+TLS_SECRET_NAME="${OSMO_TLS_SECRET_NAME:-osmo-tls}"
+TLS_MODE="${OSMO_TLS_MODE:-}"
+
 if [[ -n "$INGRESS_HOSTNAME" ]]; then
     log_info "Ingress hostname: ${INGRESS_HOSTNAME}"
 else
     log_info "Ingress hostname: (any — IP-based access)"
 fi
 
-# TLS_SECRET and TLS_ENABLED were already set earlier (before Keycloak section)
+# TLS validation
 if [[ "$TLS_ENABLED" == "true" ]]; then
-    log_success "TLS certificate detected (${TLS_SECRET}) — will create HTTPS Ingress"
+    log_info "TLS is ENABLED"
+    if [[ -z "$INGRESS_HOSTNAME" ]]; then
+        log_error "TLS is enabled but OSMO_INGRESS_HOSTNAME is not set."
+        echo "  TLS certificates are issued for a domain name, not a bare IP."
+        echo "  Set your domain: export OSMO_INGRESS_HOSTNAME=osmo.example.com"
+        exit 1
+    fi
+    # Check that the TLS secret exists (created by 03a or 03c)
+    OSMO_NS_CHECK="${OSMO_NAMESPACE:-osmo}"
+    INGRESS_NS_CHECK="${INGRESS_NAMESPACE:-ingress-nginx}"
+    TLS_SECRET_FOUND="false"
+    if kubectl get secret "${TLS_SECRET_NAME}" -n "${OSMO_NS_CHECK}" &>/dev/null || \
+       kubectl get secret "${TLS_SECRET_NAME}" -n "${INGRESS_NS_CHECK}" &>/dev/null; then
+        TLS_SECRET_FOUND="true"
+    fi
+    if [[ "$TLS_SECRET_FOUND" != "true" ]]; then
+        log_error "TLS secret '${TLS_SECRET_NAME}' not found."
+        echo "  Run one of these scripts first to obtain a certificate:"
+        echo "    ./03a-setup-tls-certificate.sh   (manual certbot with DNS-01)"
+        echo "    ./03c-deploy-cert-manager.sh     (automated cert-manager with HTTP-01)"
+        exit 1
+    fi
+    log_success "TLS secret '${TLS_SECRET_NAME}' found"
+else
+    log_info "TLS is disabled (HTTP only). Set OSMO_TLS_ENABLED=true to enable."
 fi
 
 # Create the values file with proper extraEnv and extraVolumes for each service
@@ -1155,23 +1088,31 @@ services:
       enabled: true
       prefix: /
       ingressClass: nginx
-      sslEnabled: false
+      sslEnabled: ${TLS_ENABLED}
       annotations:
         nginx.ingress.kubernetes.io/proxy-buffer-size: "16k"
         nginx.ingress.kubernetes.io/proxy-buffers: "8 16k"
         nginx.ingress.kubernetes.io/proxy-busy-buffers-size: "32k"
         nginx.ingress.kubernetes.io/large-client-header-buffers: "4 16k"
+$(if [[ "$TLS_ENABLED" == "true" ]]; then
+cat <<TLS_ANNOTATIONS
+        nginx.ingress.kubernetes.io/ssl-redirect: "true"
+$(if [[ "$TLS_MODE" == "cert-manager" ]]; then echo "        cert-manager.io/cluster-issuer: \"${CLUSTER_ISSUER_NAME:-letsencrypt-prod}\""; fi)
+TLS_ANNOTATIONS
+fi)
+$(if [[ "$TLS_ENABLED" == "true" && -n "$INGRESS_HOSTNAME" ]]; then
+cat <<TLS_BLOCK
+      tls:
+        - hosts:
+            - ${INGRESS_HOSTNAME}
+          secretName: ${TLS_SECRET_NAME}
+TLS_BLOCK
+fi)
     # Authentication configuration
-    # NOTE: auth.enabled must be false even with Keycloak — when true, OSMO enforces
-    # auth on ALL API calls (403 Forbidden without x-osmo-user/JWT), which breaks the
-    # Web UI's server-side tRPC calls (Node.js → OSMO) that don't carry auth tokens.
-    # Instead, Envoy handles external auth, and the login_info endpoints are populated
-    # via a PATCH to /api/configs/service after deployment (see Step 12b below).
-    # /api/auth/keys still works with auth.enabled=false (RSA keys are auto-generated).
 $(if [[ "$AUTH_ENABLED" == "true" ]]; then
 cat <<AUTH_BLOCK
     auth:
-      enabled: false
+      enabled: true
       device_endpoint: ${KEYCLOAK_EXTERNAL_URL}/realms/osmo/protocol/openid-connect/auth/device
       device_client_id: osmo-device
       browser_endpoint: ${KEYCLOAK_EXTERNAL_URL}/realms/osmo/protocol/openid-connect/auth
@@ -1181,6 +1122,7 @@ cat <<AUTH_BLOCK
 AUTH_BLOCK
 else
 cat <<NOAUTH_BLOCK
+    # NOTE: Auth is DISABLED. Set DEPLOY_KEYCLOAK=true with TLS to enable.
     auth:
       enabled: false
 NOAUTH_BLOCK
@@ -1343,7 +1285,7 @@ sidecars:
     enabled: true
     useKubernetesSecrets: true
 
-    # Paths that bypass authentication entirely (public access)
+    # Paths that bypass authentication entirely
     skipAuthPaths:
       - /api/version
       - /api/auth/login
@@ -1352,20 +1294,6 @@ sidecars:
       - /api/auth/jwt/refresh_token
       - /api/auth/jwt/access_token
       - /client/version
-
-    # In-cluster paths: separate Envoy listener (port 8081) that skips auth.
-    # Used by the Web UI (Node.js tRPC → OSMO API) for server-side data fetching.
-    # The Helm chart creates osmo-service-internal Service targeting this port.
-    inClusterPaths:
-      enabled: true
-      port: 8081
-      paths:
-        - /api/resources
-        - /api/configs/pool
-        - /api/bucket/list_dataset
-        - /api/workflow
-        - /api/router/version
-        - /api/task
 
     service:
       port: 8000
@@ -1415,15 +1343,15 @@ sidecars:
       hostname: ${OSMO_DOMAIN}
 ENVOY_DISABLED
 fi)
-
+  
   # Disable rate limiting (requires proper Redis config)
   rateLimit:
     enabled: false
-
+  
   # Disable log agent (configured for AWS CloudWatch by default, not available on Nebius)
   logAgent:
     enabled: false
-
+  
   # Disable OTEL (requires proper OTEL backend configuration)
   otel:
     enabled: false
@@ -1432,6 +1360,13 @@ EOF
 # -----------------------------------------------------------------------------
 # Step 6: Deploy OSMO Service
 # -----------------------------------------------------------------------------
+
+# Remove the TLS bootstrap ingress for the main domain (if it exists).
+# It was created by 04-enable-tls.sh solely to trigger the cert-manager HTTP-01
+# challenge. If left in place, its catch-all path (/) routes to a placeholder
+# service and returns 503 for any path not covered by a more specific ingress.
+kubectl delete ingress osmo-tls-bootstrap -n "${OSMO_NAMESPACE}" --ignore-not-found 2>/dev/null || true
+
 log_info "Deploying OSMO Service..."
 
 SERVICE_HELM_ARGS=(
@@ -1450,33 +1385,6 @@ helm upgrade --install osmo-service osmo/service \
 
 log_success "OSMO Service deployed"
 
-# Create an internal service for osmo-agent that bypasses the Envoy sidecar.
-# Backend operators (06-deploy-osmo-backend.sh) connect via this service so they
-# can authenticate with OSMO service tokens without needing Envoy/Keycloak JWTs.
-log_info "Creating osmo-agent-internal service (bypasses Envoy)..."
-kubectl apply -n "${OSMO_NAMESPACE}" -f - <<AGENTSVC
-apiVersion: v1
-kind: Service
-metadata:
-  name: osmo-agent-internal
-  labels:
-    app: osmo-agent
-spec:
-  type: ClusterIP
-  selector:
-    app: osmo-agent
-  ports:
-    - name: http
-      port: 80
-      targetPort: 8000
-      protocol: TCP
-AGENTSVC
-log_success "osmo-agent-internal service ready"
-
-# NOTE: osmo-service-internal is created automatically by the Helm chart
-# when sidecars.envoy.inClusterPaths.enabled=true. It routes to Envoy's
-# in-cluster listener (port 8081) which proxies to OSMO without auth.
-
 log_success "OSMO Service Helm deployment complete"
 
 # -----------------------------------------------------------------------------
@@ -1491,96 +1399,99 @@ kubectl create secret generic db-secret \
     --from-literal=db-password="${POSTGRES_PASSWORD}" \
     --dry-run=client -o yaml | kubectl apply -f -
 
-# Build router values file (using YAML file instead of --set to avoid array escaping issues)
-cat > /tmp/osmo_router_values.yaml <<EOF
-global:
-  domain: ${INGRESS_HOSTNAME:-osmo.local}
+ROUTER_HELM_ARGS=(
+    --namespace "${OSMO_NAMESPACE}"
+    --set service.type=ClusterIP
+    --set services.configFile.enabled=true
+    --set "services.postgres.serviceName=${POSTGRES_HOST}"
+    --set "services.postgres.port=${POSTGRES_PORT}"
+    --set services.postgres.db=osmo
+    --set "services.postgres.user=${POSTGRES_USER}"
+    --set services.service.ingress.enabled=true
+    --set services.service.ingress.ingressClass=nginx
+    --set "services.service.ingress.sslEnabled=${TLS_ENABLED}"
+    --set services.service.scaling.minReplicas=1
+    --set services.service.scaling.maxReplicas=1
+    --set sidecars.logAgent.enabled=false
+)
+[[ -n "$INGRESS_HOSTNAME" ]] && ROUTER_HELM_ARGS+=(--set "services.service.hostname=${INGRESS_HOSTNAME}" --set "global.domain=${INGRESS_HOSTNAME}")
 
-service:
-  type: ClusterIP
-
-services:
-  configFile:
-    enabled: true
-  postgres:
-    serviceName: "${POSTGRES_HOST}"
-    port: ${POSTGRES_PORT}
-    db: osmo
-    user: "${POSTGRES_USER}"
-  service:
-    hostname: ${INGRESS_HOSTNAME:-}
-    ingress:
-      enabled: true
-      ingressClass: nginx
-      sslEnabled: false
-      annotations:
-        nginx.ingress.kubernetes.io/proxy-buffer-size: "16k"
-        nginx.ingress.kubernetes.io/proxy-buffers-number: "4"
-    scaling:
-      minReplicas: 1
-      maxReplicas: 1
-
-sidecars:
-  logAgent:
-    enabled: false
-$(if [[ "$AUTH_ENABLED" == "true" ]]; then
-cat <<ROUTER_ENVOY
-  envoy:
-    enabled: true
-    useKubernetesSecrets: true
-    skipAuthPaths:
-      - /api/router/version
-    service:
-      hostname: ${INGRESS_HOSTNAME}
-    oauth2Filter:
-      enabled: true
-      forwardBearerToken: true
-      tokenEndpoint: ${KEYCLOAK_EXTERNAL_URL}/realms/osmo/protocol/openid-connect/token
-      authEndpoint: ${KEYCLOAK_EXTERNAL_URL}/realms/osmo/protocol/openid-connect/auth
-      clientId: osmo-browser-flow
-      authProvider: ${AUTH_DOMAIN}
-      redirectPath: api/auth/getAToken
-      logoutPath: logout
-      secretName: oidc-secrets
-      clientSecretKey: client_secret
-      hmacSecretKey: hmac_secret
-    jwt:
-      enabled: true
-      user_header: x-osmo-user
-      providers:
-        - issuer: ${KEYCLOAK_EXTERNAL_URL}/realms/osmo
-          audience: osmo-device
-          jwks_uri: ${KEYCLOAK_EXTERNAL_URL}/realms/osmo/protocol/openid-connect/certs
-          user_claim: preferred_username
-          cluster: oauth
-        - issuer: ${KEYCLOAK_EXTERNAL_URL}/realms/osmo
-          audience: osmo-browser-flow
-          jwks_uri: ${KEYCLOAK_EXTERNAL_URL}/realms/osmo/protocol/openid-connect/certs
-          user_claim: preferred_username
-          cluster: oauth
-        - issuer: osmo
-          audience: osmo
-          jwks_uri: http://osmo-service/api/auth/keys
-          user_claim: unique_name
-          cluster: osmoauth
-    osmoauth:
-      enabled: true
-      port: 80
-      hostname: ${INGRESS_HOSTNAME}
-      address: osmo-service
-ROUTER_ENVOY
+# Envoy sidecar config for Router
+if [[ "$AUTH_ENABLED" == "true" ]]; then
+    log_info "Enabling Envoy sidecar on Router with Keycloak auth..."
+    ROUTER_HELM_ARGS+=(
+        --set sidecars.envoy.enabled=true
+        --set sidecars.envoy.useKubernetesSecrets=true
+        --set "sidecars.envoy.skipAuthPaths[0]=/api/router/version"
+        --set "sidecars.envoy.service.hostname=${INGRESS_HOSTNAME}"
+        # OAuth2 filter
+        --set sidecars.envoy.oauth2Filter.enabled=true
+        --set sidecars.envoy.oauth2Filter.forwardBearerToken=true
+        --set "sidecars.envoy.oauth2Filter.tokenEndpoint=${KEYCLOAK_EXTERNAL_URL}/realms/osmo/protocol/openid-connect/token"
+        --set "sidecars.envoy.oauth2Filter.authEndpoint=${KEYCLOAK_EXTERNAL_URL}/realms/osmo/protocol/openid-connect/auth"
+        --set sidecars.envoy.oauth2Filter.clientId=osmo-browser-flow
+        --set "sidecars.envoy.oauth2Filter.authProvider=${AUTH_DOMAIN}"
+        --set sidecars.envoy.oauth2Filter.redirectPath=api/auth/getAToken
+        --set sidecars.envoy.oauth2Filter.logoutPath=logout
+        --set sidecars.envoy.oauth2Filter.secretName=oidc-secrets
+        --set sidecars.envoy.oauth2Filter.clientSecretKey=client_secret
+        --set sidecars.envoy.oauth2Filter.hmacSecretKey=hmac_secret
+        # JWT filter
+        --set sidecars.envoy.jwt.enabled=true
+        --set sidecars.envoy.jwt.user_header=x-osmo-user
+        # JWT Provider 1: Keycloak device flow (CLI)
+        --set "sidecars.envoy.jwt.providers[0].issuer=${KEYCLOAK_EXTERNAL_URL}/realms/osmo"
+        --set "sidecars.envoy.jwt.providers[0].audience=osmo-device"
+        --set "sidecars.envoy.jwt.providers[0].jwks_uri=${KEYCLOAK_EXTERNAL_URL}/realms/osmo/protocol/openid-connect/certs"
+        --set "sidecars.envoy.jwt.providers[0].user_claim=preferred_username"
+        --set "sidecars.envoy.jwt.providers[0].cluster=oauth"
+        # JWT Provider 2: Keycloak browser flow (Web UI)
+        --set "sidecars.envoy.jwt.providers[1].issuer=${KEYCLOAK_EXTERNAL_URL}/realms/osmo"
+        --set "sidecars.envoy.jwt.providers[1].audience=osmo-browser-flow"
+        --set "sidecars.envoy.jwt.providers[1].jwks_uri=${KEYCLOAK_EXTERNAL_URL}/realms/osmo/protocol/openid-connect/certs"
+        --set "sidecars.envoy.jwt.providers[1].user_claim=preferred_username"
+        --set "sidecars.envoy.jwt.providers[1].cluster=oauth"
+        # JWT Provider 3: OSMO-signed JWTs (service accounts)
+        --set "sidecars.envoy.jwt.providers[2].issuer=osmo"
+        --set "sidecars.envoy.jwt.providers[2].audience=osmo"
+        --set "sidecars.envoy.jwt.providers[2].jwks_uri=http://osmo-service/api/auth/keys"
+        --set "sidecars.envoy.jwt.providers[2].user_claim=unique_name"
+        --set "sidecars.envoy.jwt.providers[2].cluster=osmoauth"
+        # osmoauth cluster (Router-specific: points to osmo-service)
+        --set sidecars.envoy.osmoauth.enabled=true
+        --set sidecars.envoy.osmoauth.port=80
+        --set "sidecars.envoy.osmoauth.hostname=${INGRESS_HOSTNAME}"
+        --set sidecars.envoy.osmoauth.address=osmo-service
+    )
 else
-echo "  envoy:"
-echo "    enabled: false"
-fi)
-EOF
+    ROUTER_HELM_ARGS+=(--set sidecars.envoy.enabled=false)
+fi
+
+# Proxy buffer annotations for Router ingress (required for OAuth2 -- JWT cookies make headers large)
+if [[ "$AUTH_ENABLED" == "true" ]]; then
+    ROUTER_HELM_ARGS+=(
+        --set-string "services.service.ingress.annotations.nginx\.ingress\.kubernetes\.io/proxy-buffer-size=16k"
+        --set-string "services.service.ingress.annotations.nginx\.ingress\.kubernetes\.io/proxy-buffers-number=4"
+    )
+fi
+
+# TLS settings for Router ingress
+if [[ "$TLS_ENABLED" == "true" && -n "$INGRESS_HOSTNAME" ]]; then
+    ROUTER_HELM_ARGS+=(
+        --set-string "services.service.ingress.annotations.nginx\.ingress\.kubernetes\.io/ssl-redirect=true"
+        --set "services.service.ingress.tls[0].hosts[0]=${INGRESS_HOSTNAME}"
+        --set "services.service.ingress.tls[0].secretName=${TLS_SECRET_NAME}"
+    )
+    if [[ "$TLS_MODE" == "cert-manager" ]]; then
+        ROUTER_HELM_ARGS+=(
+            --set-string "services.service.ingress.annotations.cert-manager\.io/cluster-issuer=${CLUSTER_ISSUER_NAME:-letsencrypt-prod}"
+        )
+    fi
+fi
 
 helm upgrade --install osmo-router osmo/router \
-    --namespace "${OSMO_NAMESPACE}" \
-    -f /tmp/osmo_router_values.yaml \
+    "${ROUTER_HELM_ARGS[@]}" \
     --wait --timeout 5m || log_warning "Router deployment had issues"
-
-rm -f /tmp/osmo_router_values.yaml
 
 log_success "OSMO Router deployed"
 
@@ -1590,124 +1501,88 @@ log_success "OSMO Router deployed"
 if [[ "${DEPLOY_UI:-true}" == "true" ]]; then
     log_info "Deploying OSMO Web UI..."
 
-    # Build UI values file (using YAML to avoid array escaping issues with --set)
-    cat > /tmp/osmo_ui_values.yaml <<EOF
-global:
-  domain: ${INGRESS_HOSTNAME:-osmo.local}
+    UI_HELM_ARGS=(
+        --namespace "${OSMO_NAMESPACE}"
+        --set services.ui.service.type=ClusterIP
+        --set services.ui.ingress.enabled=true
+        --set services.ui.ingress.ingressClass=nginx
+        --set "services.ui.ingress.sslEnabled=${TLS_ENABLED}"
+        --set services.ui.replicas=1
+        --set "services.ui.apiHostname=osmo-service.${OSMO_NAMESPACE}.svc.cluster.local:80"
+        --set sidecars.logAgent.enabled=false
+    )
+    [[ -n "$INGRESS_HOSTNAME" ]] && UI_HELM_ARGS+=(--set "services.ui.hostname=${INGRESS_HOSTNAME}" --set "global.domain=${INGRESS_HOSTNAME}")
 
-services:
-  ui:
-    hostname: ${INGRESS_HOSTNAME:-}
-    service:
-      type: ClusterIP
-    ingress:
-      enabled: true
-      ingressClass: nginx
-      sslEnabled: false
-      annotations:
-        nginx.ingress.kubernetes.io/proxy-buffer-size: "16k"
-        nginx.ingress.kubernetes.io/proxy-buffers-number: "4"
-    replicas: 1
-$(# When Envoy auth is enabled, the UI's server-side tRPC calls must use
-# osmo-service-internal — the Helm chart's inClusterPaths service on port 8081.
-# This Envoy listener skips auth for specific API paths (resources, pools, workflows).
-if [[ "$AUTH_ENABLED" == "true" ]]; then
-    echo "    apiHostname: osmo-service-internal.${OSMO_NAMESPACE}.svc.cluster.local:80"
-else
-    echo "    apiHostname: osmo-service.${OSMO_NAMESPACE}.svc.cluster.local:80"
-fi)
+    # Envoy sidecar config for Web UI
+    if [[ "$AUTH_ENABLED" == "true" ]]; then
+        log_info "Enabling Envoy sidecar on Web UI with Keycloak auth..."
+        UI_HELM_ARGS+=(
+            --set sidecars.envoy.enabled=true
+            --set sidecars.envoy.useKubernetesSecrets=true
+            --set "sidecars.envoy.service.hostname=${INGRESS_HOSTNAME}"
+            --set sidecars.envoy.service.address=127.0.0.1
+            --set sidecars.envoy.service.port=8000
+            # OAuth2 filter
+            --set sidecars.envoy.oauth2Filter.enabled=true
+            --set "sidecars.envoy.oauth2Filter.tokenEndpoint=${KEYCLOAK_EXTERNAL_URL}/realms/osmo/protocol/openid-connect/token"
+            --set "sidecars.envoy.oauth2Filter.authEndpoint=${KEYCLOAK_EXTERNAL_URL}/realms/osmo/protocol/openid-connect/auth"
+            --set sidecars.envoy.oauth2Filter.redirectPath=getAToken
+            --set sidecars.envoy.oauth2Filter.clientId=osmo-browser-flow
+            --set "sidecars.envoy.oauth2Filter.authProvider=${AUTH_DOMAIN}"
+            --set sidecars.envoy.oauth2Filter.logoutPath=logout
+            --set sidecars.envoy.oauth2Filter.secretName=oidc-secrets
+            --set sidecars.envoy.oauth2Filter.clientSecretKey=client_secret
+            --set sidecars.envoy.oauth2Filter.hmacSecretKey=hmac_secret
+            # JWT filter
+            --set sidecars.envoy.jwt.user_header=x-osmo-user
+            # JWT Provider 1: Keycloak device flow (CLI)
+            --set "sidecars.envoy.jwt.providers[0].issuer=${KEYCLOAK_EXTERNAL_URL}/realms/osmo"
+            --set "sidecars.envoy.jwt.providers[0].audience=osmo-device"
+            --set "sidecars.envoy.jwt.providers[0].jwks_uri=${KEYCLOAK_EXTERNAL_URL}/realms/osmo/protocol/openid-connect/certs"
+            --set "sidecars.envoy.jwt.providers[0].user_claim=preferred_username"
+            --set "sidecars.envoy.jwt.providers[0].cluster=oauth"
+            # JWT Provider 2: Keycloak browser flow (Web UI)
+            --set "sidecars.envoy.jwt.providers[1].issuer=${KEYCLOAK_EXTERNAL_URL}/realms/osmo"
+            --set "sidecars.envoy.jwt.providers[1].audience=osmo-browser-flow"
+            --set "sidecars.envoy.jwt.providers[1].jwks_uri=${KEYCLOAK_EXTERNAL_URL}/realms/osmo/protocol/openid-connect/certs"
+            --set "sidecars.envoy.jwt.providers[1].user_claim=preferred_username"
+            --set "sidecars.envoy.jwt.providers[1].cluster=oauth"
+        )
+    else
+        UI_HELM_ARGS+=(--set sidecars.envoy.enabled=false)
+    fi
 
-sidecars:
-  logAgent:
-    enabled: false
-$(if [[ "$AUTH_ENABLED" == "true" ]]; then
-cat <<UI_ENVOY
-  envoy:
-    enabled: true
-    useKubernetesSecrets: true
-    service:
-      hostname: ${INGRESS_HOSTNAME}
-      address: 127.0.0.1
-      port: 8000
-    oauth2Filter:
-      enabled: true
-      tokenEndpoint: ${KEYCLOAK_EXTERNAL_URL}/realms/osmo/protocol/openid-connect/token
-      authEndpoint: ${KEYCLOAK_EXTERNAL_URL}/realms/osmo/protocol/openid-connect/auth
-      redirectPath: getAToken
-      clientId: osmo-browser-flow
-      authProvider: ${AUTH_DOMAIN}
-      logoutPath: logout
-      secretName: oidc-secrets
-      clientSecretKey: client_secret
-      hmacSecretKey: hmac_secret
-    jwt:
-      user_header: x-osmo-user
-      providers:
-        - issuer: ${KEYCLOAK_EXTERNAL_URL}/realms/osmo
-          audience: osmo-device
-          jwks_uri: ${KEYCLOAK_EXTERNAL_URL}/realms/osmo/protocol/openid-connect/certs
-          user_claim: preferred_username
-          cluster: oauth
-        - issuer: ${KEYCLOAK_EXTERNAL_URL}/realms/osmo
-          audience: osmo-browser-flow
-          jwks_uri: ${KEYCLOAK_EXTERNAL_URL}/realms/osmo/protocol/openid-connect/certs
-          user_claim: preferred_username
-          cluster: oauth
-UI_ENVOY
-else
-echo "  envoy:"
-echo "    enabled: false"
-fi)
-EOF
+    # Proxy buffer annotations for Web UI ingress (required for OAuth2 -- JWT cookies make headers large)
+    if [[ "$AUTH_ENABLED" == "true" ]]; then
+        UI_HELM_ARGS+=(
+            --set-string "services.ui.ingress.annotations.nginx\.ingress\.kubernetes\.io/proxy-buffer-size=16k"
+            --set-string "services.ui.ingress.annotations.nginx\.ingress\.kubernetes\.io/proxy-buffers-number=4"
+        )
+    fi
+
+    # TLS settings for Web UI ingress
+    if [[ "$TLS_ENABLED" == "true" && -n "$INGRESS_HOSTNAME" ]]; then
+        UI_HELM_ARGS+=(
+            --set-string "services.ui.ingress.annotations.nginx\.ingress\.kubernetes\.io/ssl-redirect=true"
+            --set "services.ui.ingress.tls[0].hosts[0]=${INGRESS_HOSTNAME}"
+            --set "services.ui.ingress.tls[0].secretName=${TLS_SECRET_NAME}"
+        )
+        if [[ "$TLS_MODE" == "cert-manager" ]]; then
+            UI_HELM_ARGS+=(
+                --set-string "services.ui.ingress.annotations.cert-manager\.io/cluster-issuer=${CLUSTER_ISSUER_NAME:-letsencrypt-prod}"
+            )
+        fi
+    fi
 
     helm upgrade --install osmo-ui osmo/web-ui \
-        --namespace "${OSMO_NAMESPACE}" \
-        -f /tmp/osmo_ui_values.yaml \
+        "${UI_HELM_ARGS[@]}" \
         --wait --timeout 5m || log_warning "UI deployment had issues"
 
-    rm -f /tmp/osmo_ui_values.yaml
     log_success "OSMO Web UI deployed"
 fi
 
 # Cleanup temp files
 rm -f /tmp/osmo_values.yaml
-
-# -----------------------------------------------------------------------------
-# Step 8.5: Patch Ingress resources with TLS (if cert exists from 04-enable-tls.sh)
-# -----------------------------------------------------------------------------
-if [[ "$TLS_ENABLED" == "true" && -n "$INGRESS_HOSTNAME" ]]; then
-    log_info "Patching Ingress resources for TLS..."
-    for ing in $(kubectl get ingress -n "${OSMO_NAMESPACE}" -o name 2>/dev/null); do
-        ing_name="${ing#*/}"
-        [[ "$ing_name" == "osmo-tls-bootstrap" ]] && continue  # skip bootstrap ingress
-        CURRENT_HTTP=$(kubectl get "$ing" -n "${OSMO_NAMESPACE}" -o jsonpath='{.spec.rules[0].http}')
-
-        kubectl patch "$ing" -n "${OSMO_NAMESPACE}" --type=merge -p "$(cat <<PATCH
-{
-  "metadata": {
-    "annotations": {
-      "cert-manager.io/cluster-issuer": "letsencrypt"
-    }
-  },
-  "spec": {
-    "tls": [{
-      "hosts": ["${INGRESS_HOSTNAME}"],
-      "secretName": "${TLS_SECRET}"
-    }],
-    "rules": [{
-      "host": "${INGRESS_HOSTNAME}",
-      "http": ${CURRENT_HTTP}
-    }]
-  }
-}
-PATCH
-)" && log_success "  ${ing_name}: TLS enabled" || log_warning "  Failed to patch ${ing_name}"
-    done
-
-    # Remove the bootstrap ingress (created by 04-enable-tls.sh Mode A)
-    kubectl delete ingress osmo-tls-bootstrap -n "${OSMO_NAMESPACE}" --ignore-not-found 2>/dev/null
-    log_success "Ingress TLS patching complete"
-fi
 
 # -----------------------------------------------------------------------------
 # Step 9: Patch Deployments to Add vault-secrets Volume
@@ -1782,7 +1657,7 @@ else
         if kubectl get svc "$svc" -n "${OSMO_NAMESPACE}" &>/dev/null; then
             CURRENT_TARGET=$(kubectl get svc "$svc" -n "${OSMO_NAMESPACE}" \
                 -o jsonpath='{.spec.ports[0].targetPort}' 2>/dev/null || echo "")
-
+            
             if [[ "$CURRENT_TARGET" == "envoy-http" || "$CURRENT_TARGET" == "envoy" ]]; then
                 log_info "  Patching $svc: targetPort envoy-http -> 8000"
                 kubectl patch svc "$svc" -n "${OSMO_NAMESPACE}" --type='json' \
@@ -1846,15 +1721,12 @@ INGRESS_URL=$(detect_service_url 2>/dev/null || true)
 if [[ -n "${OSMO_INGRESS_BASE_URL:-}" ]]; then
     TARGET_SERVICE_URL="${OSMO_INGRESS_BASE_URL}"
     log_info "Using explicit Ingress base URL: ${TARGET_SERVICE_URL}"
-elif [[ "$TLS_ENABLED" == "true" && -n "$INGRESS_HOSTNAME" ]]; then
-    TARGET_SERVICE_URL="https://${INGRESS_HOSTNAME}"
-    log_info "TLS detected, using HTTPS: ${TARGET_SERVICE_URL}"
 elif [[ -n "$INGRESS_URL" ]]; then
     TARGET_SERVICE_URL="${INGRESS_URL}"
     log_info "Auto-detected service URL: ${TARGET_SERVICE_URL}"
 else
     log_warning "Could not detect Ingress URL. Skipping service_base_url configuration."
-    log_warning "Run ./08-configure-service-url.sh manually after verifying the Ingress."
+    log_warning "Run ./07-configure-service-url.sh manually after verifying the Ingress."
     TARGET_SERVICE_URL=""
 fi
 
@@ -1862,7 +1734,6 @@ if [[ -n "$TARGET_SERVICE_URL" ]]; then
     # Start port-forward using the shared helper (auto-detects Envoy)
     start_osmo_port_forward "${OSMO_NAMESPACE}" 8080
     _PF_PID=$PORT_FORWARD_PID
-    export _OSMO_PORT=8080
 
     _cleanup_pf() {
         if [[ -n "${_PF_PID:-}" ]]; then
@@ -1895,7 +1766,7 @@ if [[ -n "$TARGET_SERVICE_URL" ]]; then
                 log_warning "Updating service_base_url from '${CURRENT_SVC_URL}' to '${TARGET_SERVICE_URL}'"
             fi
 
-            # Write config using the PATCH API helper
+            # Write config and use PATCH API
             cat > /tmp/service_url_fix.json << SVCEOF
 {
   "service_base_url": "${TARGET_SERVICE_URL}"
@@ -1907,47 +1778,15 @@ SVCEOF
                 if [[ "$NEW_SVC_URL" == "$TARGET_SERVICE_URL" ]]; then
                     log_success "service_base_url configured: ${NEW_SVC_URL}"
                 else
-                    log_warning "service_base_url verification failed. Run ./08-configure-service-url.sh manually."
+                    log_warning "service_base_url verification failed. Run ./07-configure-service-url.sh manually."
                 fi
             else
-                log_warning "Failed to set service_base_url. Run ./08-configure-service-url.sh manually."
+                log_warning "Failed to set service_base_url. Run ./07-configure-service-url.sh manually."
             fi
             rm -f /tmp/service_url_fix.json
         fi
-
-        # -----------------------------------------------------------------
-        # Step 12b: Populate /api/auth/login endpoints (Keycloak discovery)
-        # -----------------------------------------------------------------
-        # When auth.enabled=false, OSMO doesn't populate /api/auth/login from
-        # Helm values. We PATCH service_auth.login_info so the CLI can discover
-        # Keycloak endpoints via `osmo login <url>`.
-        if [[ "$AUTH_ENABLED" == "true" ]]; then
-            log_info "Populating /api/auth/login with Keycloak endpoints..."
-            KC_OIDC="${KEYCLOAK_EXTERNAL_URL}/realms/osmo/protocol/openid-connect"
-            cat > /tmp/login_info_fix.json << LOGINEOF
-{
-  "service_auth": {
-    "login_info": {
-      "device_endpoint": "${KC_OIDC}/auth/device",
-      "device_client_id": "osmo-device",
-      "browser_endpoint": "${KC_OIDC}/auth",
-      "browser_client_id": "osmo-browser-flow",
-      "token_endpoint": "${KC_OIDC}/token",
-      "logout_endpoint": "${KC_OIDC}/logout"
-    }
-  }
-}
-LOGINEOF
-            if osmo_config_update SERVICE /tmp/login_info_fix.json "Populate auth/login endpoints"; then
-                log_success "/api/auth/login endpoints configured for Keycloak"
-            else
-                log_warning "Failed to populate /api/auth/login. CLI login may not auto-discover endpoints."
-                log_warning "Run: osmo login ${TARGET_SERVICE_URL} --method dev"
-            fi
-            rm -f /tmp/login_info_fix.json
-        fi
     else
-        log_warning "Port-forward not ready. Run ./08-configure-service-url.sh manually."
+        log_warning "Port-forward not ready. Run ./07-configure-service-url.sh manually."
     fi
 
     _cleanup_pf
@@ -1969,8 +1808,8 @@ if [[ "$AUTH_ENABLED" == "true" ]]; then
     echo ""
     echo "OSMO Access:"
     if [[ -n "$INGRESS_URL" ]]; then
-        echo "  OSMO API:    ${INGRESS_URL}/api/version   (unauthenticated -- skipAuthPath)"
-        echo "  OSMO Web UI: ${INGRESS_URL}               (redirects to Keycloak login)"
+        echo "  OSMO API:   ${INGRESS_URL}/api/version   (unauthenticated -- skipAuthPath)"
+        echo "  OSMO Web UI: ${INGRESS_URL}              (redirects to Keycloak login)"
     fi
     echo ""
     echo "Login methods:"
@@ -1985,13 +1824,7 @@ if [[ "$AUTH_ENABLED" == "true" ]]; then
     echo ""
 else
     # --- No-auth output ---
-    if [[ "$TLS_ENABLED" == "true" && -n "$INGRESS_HOSTNAME" ]]; then
-        echo "OSMO Access (HTTPS via NGINX Ingress + cert-manager):"
-        echo "  OSMO API: https://${INGRESS_HOSTNAME}/api/version"
-        echo "  OSMO UI:  https://${INGRESS_HOSTNAME}"
-        echo "  OSMO CLI: osmo login https://${INGRESS_HOSTNAME} --method dev --username admin"
-        echo ""
-    elif [[ -n "$INGRESS_URL" ]]; then
+    if [[ -n "$INGRESS_URL" ]]; then
         echo "OSMO Access (via NGINX Ingress LoadBalancer):"
         echo "  OSMO API: ${INGRESS_URL}/api/version"
         echo "  OSMO UI:  ${INGRESS_URL}"
@@ -2034,5 +1867,5 @@ echo "Ingress resources:"
 kubectl get ingress -n "${OSMO_NAMESPACE}" 2>/dev/null || true
 echo ""
 echo "Next step - Deploy Backend Operator:"
-echo "  ./06-deploy-osmo-backend.sh"
+echo "  ./05-deploy-osmo-backend.sh"
 echo ""
