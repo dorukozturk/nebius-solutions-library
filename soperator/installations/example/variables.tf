@@ -559,7 +559,11 @@ variable "slurm_nodesets_enabled" {
 }
 
 variable "slurm_nodesets_partitions" {
-  description = "Partition configuration for nodesets. Used only when slurm_nodesets_enabled is true."
+  description = <<-EOT
+    Partition configuration for nodesets. Used only when slurm_nodesets_enabled is true.
+    Users must not remove the "hidden" partition.
+    Users can modify the "main" partition, but should not remove it (there must be at least one default partition).
+  EOT
   type = list(object({
     name         = string
     is_all       = optional(bool, false)
