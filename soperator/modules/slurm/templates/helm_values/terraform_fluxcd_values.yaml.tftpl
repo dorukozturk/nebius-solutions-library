@@ -248,12 +248,6 @@ resources:
             %{~ if slurm_nodesets_enabled ~}
               configType: ${slurm_nodesets_enabled ? "structured" : slurm_cluster.partition_configuration.slurm_config_type}
               partitions:
-                - name: main
-                  isAll: true
-                  config: "Default=YES PriorityTier=10 MaxTime=INFINITE State=UP OverSubscribe=YES"
-                - name: hidden
-                  isAll: true
-                  config: "Default=NO PriorityTier=10 PreemptMode=OFF Hidden=YES MaxTime=INFINITE State=UP OverSubscribe=YES"
                 %{~ for nodeset in nodesets ~}
                 %{~ if nodeset.create_partition ~}
                 - name: ${nodeset.name}

@@ -193,18 +193,24 @@ slurm_operator_stable = true
 slurm_nodesets_enabled = true
 
 # Partition configuration for nodesets. Used only when slurm_nodesets_enabled is true.
-# If empty, a default partition "main" with all nodes will be created.
+# Each partition must have either is_all = true (includes all nodesets) or nodeset_refs (list of specific nodesets).
+# Users must not remove the "hidden" partition.
+# Users can modify the "main" partition, but should not remove it (there must be at least one default partition).
 # ---
-# slurm_nodesets_partitions = [
-#   {
-#     name   = "workers"
-#     is_all = false
-#     config = "Default=NO PriorityTier=10 MaxTime=INFINITE State=UP OverSubscribe=YES"
-#     nodeset_refs = [
-#       "worker",
-#     ]
-#   },
-# ]
+slurm_nodesets_partitions = [
+  {
+    name         = "main"
+    is_all       = true
+    nodeset_refs = [] # e.g. ["worker"], but is_all must be false in this case
+    config       = "Default=YES PriorityTier=10 MaxTime=INFINITE State=UP OverSubscribe=YES"
+  },
+  {
+    name         = "hidden"
+    is_all       = true
+    nodeset_refs = []
+    config       = "Default=NO PriorityTier=10 PreemptMode=OFF Hidden=YES MaxTime=INFINITE State=UP OverSubscribe=YES"
+  },
+]
 
 # Type of the Slurm partition config. Could be either `default` or `custom`.
 # By default, "default".

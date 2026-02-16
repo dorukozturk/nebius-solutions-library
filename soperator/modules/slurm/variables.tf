@@ -782,7 +782,11 @@ variable "worker_nodesets" {
 }
 
 variable "slurm_nodesets_partitions" {
-  description = "Partition configuration for nodesets. Used only when slurm_nodesets_enabled is true."
+  description = <<-EOT
+    Partition configuration for nodesets. Used only when slurm_nodesets_enabled is true.
+    Users must not remove the "hidden" partition.
+    Users can modify the "main" partition, but should not remove it (there must be at least one default partition).
+  EOT
   type = list(object({
     name         = string
     is_all       = optional(bool, false)
@@ -790,6 +794,45 @@ variable "slurm_nodesets_partitions" {
     config       = string
   }))
   default = []
+
+  validation {
+    condition = (
+      length(var.slurm_nodesets_partitions) == 0 ||
+      anytrue([for p in var.slurm_nodesets_partitions : (p.name == "hidden")])
+    )
+    error_message = "slurm_nodesets_partitions must include a partition named \"hidden\"."
+  }
+
+  validation {
+    condition = (
+      length(var.slurm_nodesets_partitions) == 0 ||
+      length([for p in var.slurm_nodesets_partitions : p if can(regex("Default=YES", p.config))]) == 1
+    )
+    error_message = "Exactly one partition in slurm_nodesets_partitions must have \"Default=YES\" in its config."
+  }
+
+  validation {
+    condition = alltrue([
+      for p in var.slurm_nodesets_partitions :
+      (p.is_all || length(p.nodeset_refs) > 0)
+    ])
+    error_message = "Each partition must have either is_all = true or non-empty nodeset_refs."
+  }
+
+  validation {
+    condition = alltrue([
+      for p in var.slurm_nodesets_partitions :
+      !(p.is_all && length(p.nodeset_refs) > 0)
+    ])
+    error_message = "A partition cannot have both is_all = true and non-empty nodeset_refs."
+  }
+
+  validation {
+    condition = (
+      length(distinct([for p in var.slurm_nodesets_partitions : p.name])) == length(var.slurm_nodesets_partitions)
+    )
+    error_message = "All partition names in slurm_nodesets_partitions must be unique."
+  }
 }
 
 # endregion Nodesets
