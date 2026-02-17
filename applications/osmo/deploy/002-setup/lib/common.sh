@@ -27,9 +27,6 @@ log_error() {
     echo -e "${RED}[✗]${NC} $1"
 }
 
-# Pause on error so the user can read the output before the terminal closes
-trap '_exit_code=$?; if [[ $_exit_code -ne 0 ]]; then echo ""; log_error "Script failed (exit code $_exit_code). Press Enter to close..."; read -r; fi' EXIT
-
 # Read input with a prompt into a variable (bash/zsh compatible).
 read_prompt_var() {
     local prompt=$1
@@ -202,8 +199,8 @@ wait_for_pods() {
 
 # Detect OSMO service URL from the NGINX Ingress Controller's LoadBalancer.
 #
-# When TLS_ENABLED=true and OSMO_INGRESS_HOSTNAME is set, returns https://<hostname>.
-# Otherwise falls back to http://<ip>.
+# When OSMO_TLS_ENABLED=true and OSMO_INGRESS_HOSTNAME is set, returns
+# https://<hostname>. Otherwise falls back to http://<ip>.
 #
 # Lookup order:
 #   0. If TLS enabled + hostname set, return https://<hostname> immediately
@@ -216,12 +213,13 @@ wait_for_pods() {
 #   [[ -n "$url" ]] && echo "OSMO reachable at $url"
 detect_service_url() {
     local ns="${INGRESS_NAMESPACE:-ingress-nginx}"
-    local tls_enabled="${TLS_ENABLED:-false}"
+    local tls_enabled="${OSMO_TLS_ENABLED:-false}"
     local hostname="${OSMO_INGRESS_HOSTNAME:-}"
     local scheme="http"
 
     if [[ "$tls_enabled" == "true" ]]; then
         scheme="https"
+        # If hostname is configured, prefer it (TLS certs are issued for the domain)
         if [[ -n "$hostname" ]]; then
             echo "${scheme}://${hostname}"
             return 0
@@ -262,109 +260,6 @@ detect_service_url() {
 
     # Nothing found
     return 1
-}
-
-# ---------------------------------------------------------------------------
-# Envoy-aware helpers
-# When Envoy sidecar is present, these helpers port-forward directly to the
-# OSMO pod on port 8000 (bypassing Envoy) and inject x-osmo-user / x-osmo-roles
-# headers so the API recognises the caller as an admin.
-# ---------------------------------------------------------------------------
-
-# Check whether a pod matching a label selector has an "envoy" container.
-# Usage: has_envoy_sidecar <namespace> <label_selector>
-has_envoy_sidecar() {
-    local ns="${1:-osmo}"
-    # The OSMO Helm chart uses the label "app=osmo-service" (not app.kubernetes.io/name)
-    local label="${2:-app=osmo-service}"
-    kubectl get pods -n "$ns" -l "$label" -o jsonpath='{.items[0].spec.containers[*].name}' 2>/dev/null | grep -qw envoy
-}
-
-# Port-forward to the OSMO service.
-# When Envoy is present, forwards to the first matching *pod* on port 8000
-# (direct access, no auth). Otherwise forwards to svc/osmo-service:80.
-# Sets PORT_FORWARD_PID and _OSMO_AUTH_BYPASS.
-# Usage: start_osmo_port_forward <namespace> <local_port>
-start_osmo_port_forward() {
-    local ns="${1:-osmo}"
-    local local_port="${2:-8080}"
-
-    # Kill any stale port-forward on the target port (e.g. from a previous sourced run)
-    if command -v lsof &>/dev/null && lsof -ti :"$local_port" &>/dev/null; then
-        log_warning "Port ${local_port} already in use — killing stale process"
-        kill $(lsof -ti :"$local_port") 2>/dev/null || true
-        sleep 1
-    fi
-
-    if has_envoy_sidecar "$ns" "app=osmo-service"; then
-        log_info "Envoy sidecar detected — port-forwarding to pod:8000 (bypass Envoy)"
-        local pod_name
-        pod_name=$(kubectl get pods -n "$ns" -l app=osmo-service \
-            -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
-        kubectl port-forward -n "$ns" "pod/${pod_name}" "${local_port}:8000" &>/dev/null &
-        PORT_FORWARD_PID=$!
-        _OSMO_AUTH_BYPASS="true"
-    else
-        log_info "No Envoy sidecar — port-forwarding to svc/osmo-service:80"
-        kubectl port-forward -n "$ns" svc/osmo-service "${local_port}:80" &>/dev/null &
-        PORT_FORWARD_PID=$!
-        _OSMO_AUTH_BYPASS="false"
-    fi
-    export PORT_FORWARD_PID _OSMO_AUTH_BYPASS
-}
-
-# Wrapper around curl that injects admin headers when bypassing Envoy.
-# Usage: osmo_curl <METHOD> <URL> [extra_curl_args...]
-osmo_curl() {
-    local method="$1"; shift
-    local url="$1"; shift
-    local extra_args=("$@")
-
-    if [[ "${_OSMO_AUTH_BYPASS:-false}" == "true" ]]; then
-        curl -s -X "$method" "$url" \
-            -H "x-osmo-user: osmo-admin" \
-            -H "x-osmo-roles: osmo-admin,osmo-user" \
-            -H "Content-Type: application/json" \
-            "${extra_args[@]}"
-    else
-        curl -s -X "$method" "$url" \
-            -H "Content-Type: application/json" \
-            "${extra_args[@]}"
-    fi
-}
-
-# Login to OSMO via the CLI. No-op when bypassing Envoy (headers handle auth).
-# Usage: osmo_login <local_port>
-osmo_login() {
-    local port="${1:-8080}"
-    if [[ "${_OSMO_AUTH_BYPASS:-false}" == "true" ]]; then
-        log_info "Auth bypass active — skipping osmo login"
-        return 0
-    fi
-    osmo login "http://localhost:${port}" --method dev --username admin 2>/dev/null
-}
-
-# Update an OSMO config.
-# When bypassing Envoy, uses the PATCH API with configs_dict wrapper
-# (avoids the "osmo config update" CLI which may not work without a real session).
-# Otherwise delegates to `osmo config update`.
-# Usage: osmo_config_update <CONFIG_TYPE> <json_file> <description>
-osmo_config_update() {
-    local config_type="$1"
-    local json_file="$2"
-    local description="${3:-Update config}"
-    local port="${_OSMO_PORT:-8080}"
-    local config_type_lower
-    config_type_lower=$(echo "$config_type" | tr '[:upper:]' '[:lower:]')
-
-    if [[ "${_OSMO_AUTH_BYPASS:-false}" == "true" ]]; then
-        # Wrap the JSON in configs_dict and PATCH directly
-        local payload
-        payload=$(jq -n --argjson data "$(cat "$json_file")" '{"configs_dict": $data}')
-        osmo_curl PATCH "http://localhost:${port}/api/configs/${config_type_lower}" -d "$payload"
-    else
-        osmo config update "$config_type" --file "$json_file" --description "$description" 2>/dev/null
-    fi
 }
 
 # Get Terraform output (supports nested values like "postgresql.host")
@@ -415,5 +310,125 @@ get_mysterybox_secret() {
     
     if [[ -n "$result" ]]; then
         echo "$result" | jq -r '.data.string_value // empty' 2>/dev/null
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# OSMO API helpers (for use when Envoy auth sidecar is present)
+# -----------------------------------------------------------------------------
+# Per OSMO documentation, the OSMO service authorises requests by reading
+# the x-osmo-user and x-osmo-roles headers.  Envoy normally sets these from
+# the JWT but when we bypass Envoy (port-forward to pod:8000) we must set
+# them ourselves.
+#
+# Reference: https://nvidia.github.io/OSMO/main/deployment_guide/appendix/authentication/authentication_flow.html
+
+# Detect if a pod has an Envoy sidecar container
+# Usage: has_envoy_sidecar <namespace> <label-selector>
+# Returns 0 (true) if envoy container is found, 1 (false) otherwise
+has_envoy_sidecar() {
+    local ns="$1"
+    local label="$2"
+    local pod_name
+    pod_name=$(kubectl get pod -n "$ns" -l "$label" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    if [[ -z "$pod_name" ]]; then
+        return 1
+    fi
+    kubectl get pod -n "$ns" "$pod_name" -o jsonpath='{.spec.containers[*].name}' 2>/dev/null | grep -q envoy
+}
+
+# Start a port-forward that bypasses Envoy when the sidecar is present.
+# Sets PORT_FORWARD_PID and prints log messages.
+# Usage: start_osmo_port_forward <namespace> [local_port]
+start_osmo_port_forward() {
+    local ns="${1:-osmo}"
+    local local_port="${2:-8080}"
+
+    if has_envoy_sidecar "$ns" "app=osmo-service"; then
+        local pod_name
+        pod_name=$(kubectl get pod -n "$ns" -l app=osmo-service -o jsonpath='{.items[0].metadata.name}')
+        log_info "Envoy sidecar detected -- port-forwarding to pod/${pod_name}:8000 (bypassing auth)..."
+        kubectl port-forward -n "$ns" "pod/${pod_name}" "${local_port}:8000" &>/dev/null &
+        _OSMO_AUTH_BYPASS=true
+    else
+        log_info "No Envoy sidecar -- port-forwarding to svc/osmo-service:80..."
+        kubectl port-forward -n "$ns" svc/osmo-service "${local_port}:80" &>/dev/null &
+        _OSMO_AUTH_BYPASS=false
+    fi
+    PORT_FORWARD_PID=$!
+    export _OSMO_AUTH_BYPASS
+}
+
+# Make an authenticated curl call to the OSMO API.
+# When _OSMO_AUTH_BYPASS=true (Envoy bypassed), injects x-osmo-user and
+# x-osmo-roles headers so the OSMO service authorises the request.
+# Usage: osmo_curl <method> <url> [curl-args...]
+# Example: osmo_curl GET "http://localhost:8080/api/configs/service"
+# Example: osmo_curl PATCH "http://localhost:8080/api/configs/service" -d '{"configs_dict":{...}}'
+osmo_curl() {
+    local method="$1"; shift
+    local url="$1"; shift
+
+    local auth_args=()
+    if [[ "${_OSMO_AUTH_BYPASS:-false}" == "true" ]]; then
+        auth_args+=(-H "x-osmo-user: osmo-admin" -H "x-osmo-roles: osmo-admin,osmo-user")
+    fi
+
+    curl -s -X "$method" "$url" \
+        -H "Content-Type: application/json" \
+        "${auth_args[@]}" \
+        "$@"
+}
+
+# Log in to OSMO using the appropriate method.
+# When bypassing Envoy this is a no-op (curl headers handle auth).
+# Otherwise uses `osmo login --method dev`.
+# Usage: osmo_login [port]
+osmo_login() {
+    local port="${1:-8080}"
+    if [[ "${_OSMO_AUTH_BYPASS:-false}" == "true" ]]; then
+        log_info "Auth bypass active -- using direct API headers (osmo-admin role)"
+    else
+        log_info "Logging in to OSMO..."
+        if ! osmo login "http://localhost:${port}" --method dev --username admin 2>/dev/null; then
+            log_error "Failed to login to OSMO"
+            return 1
+        fi
+        log_success "Logged in successfully"
+    fi
+}
+
+# Update an OSMO config via the PATCH API (partial merge).
+# When _OSMO_AUTH_BYPASS=true, uses curl; otherwise uses osmo CLI.
+# Usage: osmo_config_update <CONFIG_TYPE> <json_file> <description>
+# Example: osmo_config_update WORKFLOW /tmp/config.json "Configure storage"
+osmo_config_update() {
+    local config_type="$1"
+    local json_file="$2"
+    local description="${3:-Update config}"
+    local port="${4:-8080}"
+
+    if [[ "${_OSMO_AUTH_BYPASS:-false}" == "true" ]]; then
+        local endpoint
+        endpoint="api/configs/$(echo "$config_type" | tr '[:upper:]' '[:lower:]')"
+
+        # Build PATCH request body: {"description": "...", "configs_dict": <file-contents>}
+        local body
+        body=$(jq -n --arg desc "$description" --slurpfile cfg "$json_file" \
+            '{description: $desc, configs_dict: $cfg[0]}')
+
+        local http_code
+        http_code=$(osmo_curl PATCH "http://localhost:${port}/${endpoint}" \
+            -d "$body" -o /tmp/_osmo_patch_resp.txt -w "%{http_code}")
+
+        if [[ "$http_code" =~ ^2 ]]; then
+            return 0
+        else
+            log_error "PATCH /${endpoint} returned HTTP ${http_code}"
+            cat /tmp/_osmo_patch_resp.txt 2>/dev/null || true
+            return 1
+        fi
+    else
+        osmo config update "$config_type" --file "$json_file" --description "$description" 2>/dev/null
     fi
 }

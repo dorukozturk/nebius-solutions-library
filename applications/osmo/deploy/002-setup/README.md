@@ -24,20 +24,17 @@ Run scripts in order:
 # 3. NGINX Ingress Controller (required – provides routing for OSMO services)
 ./03-deploy-nginx-ingress.sh
 
-# 4. Enable TLS (optional, recommended – set up DNS A record first)
-./04-enable-tls.sh <hostname>
+# 4. OSMO Control Plane
+./04-deploy-osmo-control-plane.sh
 
-# 5. OSMO Control Plane
-./05-deploy-osmo-control-plane.sh
+# 5. OSMO Backend
+./05-deploy-osmo-backend.sh
 
-# 6. OSMO Backend
-./06-deploy-osmo-backend.sh
+# 6. Configure Storage (requires port-forward, see main README)
+./06-configure-storage.sh
 
-# 7. Configure Storage (requires port-forward, see main README)
-./07-configure-storage.sh
-
-# 8. Configure GPU Platform (required for GPU workflows)
-./09-configure-gpu-platform.sh
+# 7. Configure GPU Platform (required for GPU workflows)
+./08-configure-gpu-platform.sh
 ```
 
 ## Scripts
@@ -47,12 +44,11 @@ Run scripts in order:
 | `01-deploy-gpu-infrastructure.sh` | GPU Operator, Network Operator, KAI Scheduler | ~15 min |
 | `02-deploy-observability.sh` | Prometheus, Grafana, Loki, Promtail | ~10 min |
 | `03-deploy-nginx-ingress.sh` | NGINX Ingress Controller (routing for OSMO services) | ~2 min |
-| `04-enable-tls.sh` | TLS/HTTPS via cert-manager + Let's Encrypt (optional, recommended) | ~2 min |
-| `05-deploy-osmo-control-plane.sh` | OSMO Control Plane, Ingress resources, database secrets, service URL | ~5 min |
-| `06-deploy-osmo-backend.sh` | OSMO Backend operator | ~5 min |
-| `07-configure-storage.sh` | Configure S3-compatible storage for workflow logs/data | ~1 min |
-| `08-configure-service-url.sh` | Reconfigure service URL manually (usually not needed) | ~1 min |
-| `09-configure-gpu-platform.sh` | Configure GPU platform with tolerations/node selector | ~1 min |
+| `04-deploy-osmo-control-plane.sh` | OSMO Control Plane, Ingress resources, database secrets, service URL | ~5 min |
+| `05-deploy-osmo-backend.sh` | OSMO Backend operator | ~5 min |
+| `06-configure-storage.sh` | Configure S3-compatible storage for workflow logs/data | ~1 min |
+| `07-configure-service-url.sh` | Reconfigure service URL manually (usually not needed) | ~1 min |
+| `08-configure-gpu-platform.sh` | Configure GPU platform with tolerations/node selector | ~1 min |
 
 ## Configuration
 
@@ -83,7 +79,7 @@ OSMO_NAMESPACE="osmo"
 # Grafana password (auto-generated if empty)
 GRAFANA_ADMIN_PASSWORD=""
 
-# NGINX Ingress (deploy 03-deploy-nginx-ingress.sh before 05-deploy-osmo-control-plane.sh)
+# NGINX Ingress (deploy 03-deploy-nginx-ingress.sh before 04-deploy-osmo-control-plane.sh)
 OSMO_INGRESS_HOSTNAME=""         # hostname for Ingress rules (e.g. osmo.example.com); leave empty for IP-based access
 OSMO_INGRESS_BASE_URL=""         # override for service_base_url; auto-detected from LoadBalancer if empty
 ```
@@ -97,7 +93,7 @@ If you ran `secrets-init.sh` in the prerequisites step, the following environmen
 | `TF_VAR_postgresql_mysterybox_secret_id` | MysteryBox secret ID for PostgreSQL password |
 | `TF_VAR_mek_mysterybox_secret_id` | MysteryBox secret ID for MEK (Master Encryption Key) |
 
-The `05-deploy-osmo-control-plane.sh` script automatically reads these secrets from MysteryBox. This keeps sensitive credentials out of Terraform state and provides a secure secrets management workflow.
+The `04-deploy-osmo-control-plane.sh` script automatically reads these secrets from MysteryBox. This keeps sensitive credentials out of Terraform state and provides a secure secrets management workflow.
 
 **Secret retrieval order:**
 1. **MysteryBox** (if secret ID is set via `TF_VAR_*` or `OSMO_*` env vars)
@@ -182,7 +178,7 @@ Nebius GPU nodes have a taint `nvidia.com/gpu=true:NoSchedule` that prevents pod
 ### Option 1: Run the Configuration Script (Recommended)
 
 ```bash
-./09-configure-gpu-platform.sh
+./08-configure-gpu-platform.sh
 ```
 
 ### Option 2: Manual Configuration via API
@@ -358,7 +354,7 @@ If OSMO shows 0 GPUs or GPU workflows fail to schedule:
 
 4. If missing, run the GPU configuration:
    ```bash
-   ./09-configure-gpu-platform.sh
+   ./08-configure-gpu-platform.sh
    ```
 
 5. Verify OSMO sees GPU resources:
