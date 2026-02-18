@@ -61,8 +61,6 @@ resource "kubernetes_job_v1" "kubeflow-install" {
       spec {
         service_account_name = kubernetes_service_account_v1.nccl-test.metadata[0].name
         container {
-
-        container {
           name    = "kubectl"
           image   = "bitnami/kubectl" # Example image, replace with your desired image
           command = ["/bin/sh", "-c"]
@@ -129,8 +127,6 @@ resource "kubernetes_job_v1" "wait-for-nccl-test" {
 
       spec {
         service_account_name = kubernetes_service_account_v1.nccl-test.metadata[0].name
-        container {
-
         container {
           name    = "kubectl"
           image   = "bitnami/kubectl" # Example image, replace with your desired image
