@@ -62,9 +62,9 @@ locals {
 
   platform_to_cuda = {
     gpu-b200-sxm-a = "cuda12.8"
-    gpu-b300-sxm   = "cuda13.0"
+    gpu-b200-sxm   = "cuda12.8"
   }
-  device_preset = lookup(local.platform_to_cuda, local.gpu_nodes_platform, "cuda12")
+  device_preset = lookup(local.platform_to_cuda, local.gpu_nodes_platform, "cuda13.0")
 
   valid_mig_parted_configs = {
     "gpu-h100-sxm"   = ["all-disabled", "all-enabled", "all-balanced", "all-1g.10gb", "all-1g.10gb.me", "all-1g.20gb", "all-2g.20gb", "all-3g.40gb", "all-4g.40gb", "all-7g.80gb"]
