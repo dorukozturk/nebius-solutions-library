@@ -32,13 +32,13 @@ The module exposes NIMs using a shared LoadBalancer per group. The demo UI expec
 - **Qwen3** → `8008` *(if enabled in this module)*
 - **ProteinMPNN** → `8009` *(if enabled in this module)*
 - **RFdiffusion** → `8010` *(if enabled in this module)*
-- **Nemotron Nano 12B v2 VL (Nano2 VL)** → `8011` *(if enabled in this module)*
 
 ### Cosmos / World Foundation Models (Separate LB)
 - **Cosmos-Reason1-7B** → `8000`
 - **Cosmos-Reason2-8B** → `8001`
 - **Cosmos-Reason2-2B** → `8002`
 - **Cosmos-Embed1** → `8003`
+- **Nemotron Nano 12B v2 VL (NAno2 VL)** → `8004` *(if enabled in this module)*
 
 ### BioNeMo (Separate LB)
 - Deployed via `bionemo.tf` (ports and services defined there).
