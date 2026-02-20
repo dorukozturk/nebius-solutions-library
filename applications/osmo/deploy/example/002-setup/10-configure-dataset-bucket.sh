@@ -55,11 +55,7 @@ else
         printf "Enter choice [1-${#VALID_REGIONS[@]}]: "
         read -r choice
         if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#VALID_REGIONS[@]} )); then
-            REGION="${VALID_REGIONS[$choice]}"
-            # bash arrays are 0-based, zsh arrays are 1-based; adjust if needed
-            if [[ -z "$REGION" ]]; then
-                REGION="${VALID_REGIONS[$((choice - 1))]}"
-            fi
+            REGION="${VALID_REGIONS[$((choice - 1))]}"
             break
         fi
         echo "Invalid selection. Please enter a number between 1 and ${#VALID_REGIONS[@]}."

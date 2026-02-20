@@ -3,7 +3,7 @@
 # This removes Keycloak and related secrets. After running this, re-deploy
 # OSMO control plane without DEPLOY_KEYCLOAK to switch back to open API mode.
 set -e
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 source "${SCRIPT_DIR}/lib/common.sh"
 source "${SCRIPT_DIR}/defaults.sh"
 

@@ -295,7 +295,8 @@ if [[ "$TLS_MODE" == "certbot" ]]; then
         echo "  Certbot will run once per domain. Each requires a separate DNS TXT record."
         echo ""
     fi
-    read -r -p "  Press Enter to continue (or Ctrl-C to abort)..."
+    printf "  Press Enter to continue (or Ctrl-C to abort)..."
+    read -r
     echo ""
 
     # Process each domain
@@ -416,41 +417,87 @@ EOF
     log_success "ClusterIssuer created"
 
     # -------------------------------------------------------------------------
-    # Issue TLS certificate for main domain
+    # Clean up any previous failed certificate attempts
     # -------------------------------------------------------------------------
-    if [[ "$OSMO_DEPLOYED" == "true" ]]; then
-        # Mode B: Patch existing Ingress resources with TLS
-        log_info "Patching Ingress resources for TLS..."
+    log_info "Cleaning up previous certificate attempts (if any)..."
+    kubectl delete challenge --all -n "${OSMO_NS}" --ignore-not-found 2>/dev/null || true
+    kubectl delete order --all -n "${OSMO_NS}" --ignore-not-found 2>/dev/null || true
+    kubectl delete certificaterequest --all -n "${OSMO_NS}" --ignore-not-found 2>/dev/null || true
+    kubectl delete certificate "${TLS_SECRET}" -n "${OSMO_NS}" --ignore-not-found 2>/dev/null || true
+    kubectl delete secret "${TLS_SECRET}" -n "${OSMO_NS}" --ignore-not-found 2>/dev/null || true
+    kubectl delete ingress osmo-tls-bootstrap -n "${OSMO_NS}" --ignore-not-found 2>/dev/null || true
+    kubectl delete ingress osmo-tls-auth-bootstrap -n "${OSMO_NS}" --ignore-not-found 2>/dev/null || true
+    # Clean up any lingering solver pods from previous attempts
+    kubectl delete pods -n "${OSMO_NS}" -l acme.cert-manager.io/http01-solver=true --ignore-not-found 2>/dev/null || true
 
+    # -------------------------------------------------------------------------
+    # Helper: wait for a certificate to become ready
+    # -------------------------------------------------------------------------
+    wait_for_certificate() {
+        local cert_name="$1"
+        local max_wait="${2:-300}"
+        local interval=5
+        local elapsed=0
+
+        log_info "Waiting for certificate '${cert_name}' (up to ${max_wait}s)..."
+        while [[ $elapsed -lt $max_wait ]]; do
+            local status
+            status=$(kubectl get certificate "${cert_name}" -n "${OSMO_NS}" \
+                -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+            if [[ "$status" == "True" ]]; then
+                log_success "Certificate '${cert_name}' issued and ready"
+                return 0
+            fi
+            if (( elapsed > 0 && elapsed % 30 == 0 )); then
+                local challenge_state
+                challenge_state=$(kubectl get challenge -n "${OSMO_NS}" \
+                    -o jsonpath='{.items[0].status.state}' 2>/dev/null || echo "unknown")
+                log_info "  Still waiting... (elapsed: ${elapsed}s, challenge: ${challenge_state})"
+            fi
+            sleep $interval
+            elapsed=$((elapsed + interval))
+        done
+
+        log_warning "Certificate '${cert_name}' not ready after ${max_wait}s"
+        kubectl describe certificate "${cert_name}" -n "${OSMO_NS}" 2>/dev/null | tail -15
+        echo ""
+        echo "Debugging commands:"
+        echo "  kubectl get certificate,certificaterequest,order,challenge -n ${OSMO_NS}"
+        echo "  kubectl describe challenge -n ${OSMO_NS}"
+        return 1
+    }
+
+    # -------------------------------------------------------------------------
+    # Issue TLS certificate for main domain
+    #
+    # When OSMO is already deployed (Mode B), the Envoy sidecar on OSMO
+    # services intercepts HTTP requests (including the ACME challenge path)
+    # and redirects them to Keycloak OAuth, which breaks Let's Encrypt.
+    #
+    # To work around this, we temporarily remove OSMO Ingress resources
+    # that have catch-all paths, create a clean bootstrap Ingress for the
+    # challenge, and restore everything with TLS once the cert is ready.
+    # -------------------------------------------------------------------------
+    REMOVED_INGRESSES=()
+
+    if [[ "$OSMO_DEPLOYED" == "true" ]]; then
+        log_info "Temporarily removing OSMO Ingress resources for certificate issuance..."
+        log_info "(Envoy sidecars intercept ACME challenges; we need a clean path)"
+
+        # Save and remove all OSMO ingresses to prevent Envoy from intercepting
+        mkdir -p /tmp/osmo-tls-backup
         for ing in $(kubectl get ingress -n "${OSMO_NS}" -o name 2>/dev/null); do
             ing_name="${ing#*/}"
-            CURRENT_HTTP=$(kubectl get "$ing" -n "${OSMO_NS}" -o jsonpath='{.spec.rules[0].http}')
-
-            kubectl patch "$ing" -n "${OSMO_NS}" --type=merge -p "$(cat <<PATCH
-{
-  "metadata": {
-    "annotations": {
-      "cert-manager.io/cluster-issuer": "letsencrypt"
-    }
-  },
-  "spec": {
-    "tls": [{
-      "hosts": ["${MAIN_HOSTNAME}"],
-      "secretName": "${TLS_SECRET}"
-    }],
-    "rules": [{
-      "host": "${MAIN_HOSTNAME}",
-      "http": ${CURRENT_HTTP}
-    }]
-  }
-}
-PATCH
-)" && log_success "  ${ing_name} patched" || log_warning "  Failed to patch ${ing_name}"
+            kubectl get "$ing" -n "${OSMO_NS}" -o yaml > "/tmp/osmo-tls-backup/${ing_name}.yaml"
+            kubectl delete "$ing" -n "${OSMO_NS}" 2>/dev/null || true
+            REMOVED_INGRESSES+=("$ing_name")
+            log_info "  Removed ingress/${ing_name} (backed up)"
         done
-    else
-        # Mode A: Create a temporary Ingress to trigger HTTP-01 challenge
-        log_info "Creating temporary Ingress for certificate issuance..."
-        kubectl apply -f - <<EOF
+    fi
+
+    # Create bootstrap Ingress — no Envoy, no auth, just cert-manager
+    log_info "Creating bootstrap Ingress for certificate issuance..."
+    kubectl apply -f - <<EOF
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -458,6 +505,8 @@ metadata:
   namespace: ${OSMO_NS}
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt
+    acme.cert-manager.io/http01-edit-in-place: "true"
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
 spec:
   ingressClassName: nginx
   tls:
@@ -476,39 +525,31 @@ spec:
                 port:
                   number: 80
 EOF
-        log_success "Bootstrap Ingress created"
-    fi
+    log_success "Bootstrap Ingress created"
 
     # Wait for main certificate
-    log_info "Waiting for TLS certificate to be issued (up to 120s)..."
-    CERT_READY=""
-    for i in $(seq 1 24); do
-        CERT_READY=$(kubectl get certificate "${TLS_SECRET}" -n "${OSMO_NS}" \
-            -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
-        if [[ "$CERT_READY" == "True" ]]; then
-            log_success "TLS certificate issued and ready"
-            break
-        fi
-        sleep 5
-    done
-
-    if [[ "$CERT_READY" != "True" ]]; then
-        log_warning "Certificate not ready yet. Checking status..."
-        kubectl describe certificate "${TLS_SECRET}" -n "${OSMO_NS}" 2>/dev/null | tail -10
-        echo ""
-        log_info "It may take a few more minutes. Check with:"
-        echo "  kubectl get certificate -n ${OSMO_NS}"
-        echo "  kubectl describe challenge -n ${OSMO_NS}"
+    CERT_READY="False"
+    if wait_for_certificate "${TLS_SECRET}" 300; then
+        CERT_READY="True"
     fi
 
     # Copy main cert secret to ingress namespace if needed
     copy_secret_across_namespaces "${TLS_SECRET}"
 
+    # Always clean up the bootstrap Ingress
+    log_info "Removing bootstrap ingress..."
+    kubectl delete ingress osmo-tls-bootstrap -n "${OSMO_NS}" --ignore-not-found 2>/dev/null || true
+
     # -------------------------------------------------------------------------
     # Issue TLS certificate for Keycloak auth subdomain
     # -------------------------------------------------------------------------
+    AUTH_CERT_READY="False"
     if [[ -n "$AUTH_HOSTNAME" ]]; then
         log_info "Issuing TLS certificate for Keycloak auth subdomain: ${AUTH_HOSTNAME}..."
+
+        # Clean up previous auth cert attempts
+        kubectl delete certificate "${KC_TLS_SECRET}" -n "${OSMO_NS}" --ignore-not-found 2>/dev/null || true
+        kubectl delete secret "${KC_TLS_SECRET}" -n "${OSMO_NS}" --ignore-not-found 2>/dev/null || true
 
         kubectl apply -f - <<EOF
 apiVersion: networking.k8s.io/v1
@@ -518,6 +559,8 @@ metadata:
   namespace: ${OSMO_NS}
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt
+    acme.cert-manager.io/http01-edit-in-place: "true"
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
 spec:
   ingressClassName: nginx
   tls:
@@ -536,36 +579,80 @@ spec:
                 port:
                   number: 80
 EOF
-        log_success "Auth subdomain bootstrap Ingress created"
+        log_success "Auth bootstrap Ingress created"
 
-        log_info "Waiting for auth TLS certificate to be issued (up to 120s)..."
-        AUTH_CERT_READY=""
-        for i in $(seq 1 24); do
-            AUTH_CERT_READY=$(kubectl get certificate "${KC_TLS_SECRET}" -n "${OSMO_NS}" \
-                -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
-            if [[ "$AUTH_CERT_READY" == "True" ]]; then
-                log_success "Auth TLS certificate issued and ready"
-                break
-            fi
-            sleep 5
-        done
-
-        if [[ "$AUTH_CERT_READY" != "True" ]]; then
-            log_warning "Auth certificate not ready yet. It may take a few more minutes."
-            log_info "Check with: kubectl get certificate ${KC_TLS_SECRET} -n ${OSMO_NS}"
+        if wait_for_certificate "${KC_TLS_SECRET}" 300; then
+            AUTH_CERT_READY="True"
         fi
 
         # Copy auth cert secret to ingress namespace if needed
         copy_secret_across_namespaces "${KC_TLS_SECRET}"
 
-        # Clean up bootstrap Ingress (prevents NGINX admission webhook conflicts)
-        log_info "Removing auth bootstrap ingress (certificate provisioned)..."
-        kubectl delete ingress osmo-tls-auth-bootstrap -n "${OSMO_NS}" --ignore-not-found 2>/dev/null
+        # Always clean up auth bootstrap Ingress
+        log_info "Removing auth bootstrap ingress..."
+        kubectl delete ingress osmo-tls-auth-bootstrap -n "${OSMO_NS}" --ignore-not-found 2>/dev/null || true
     fi
 
-    # Clean up main bootstrap Ingress
-    log_info "Removing main bootstrap ingress (certificate provisioned)..."
-    kubectl delete ingress osmo-tls-bootstrap -n "${OSMO_NS}" --ignore-not-found 2>/dev/null
+    # -------------------------------------------------------------------------
+    # Restore OSMO Ingress resources with TLS (Mode B)
+    # -------------------------------------------------------------------------
+    if [[ "$OSMO_DEPLOYED" == "true" && "$CERT_READY" == "True" ]]; then
+        log_info "Restoring OSMO Ingress resources with TLS..."
+
+        for ing_name in "${REMOVED_INGRESSES[@]}"; do
+            backup_file="/tmp/osmo-tls-backup/${ing_name}.yaml"
+            [[ ! -f "$backup_file" ]] && continue
+
+            # Determine which hostname/secret this ingress should use
+            local_host=$(yq -r '.spec.rules[0].host // ""' "$backup_file" 2>/dev/null || \
+                         python3 -c "import yaml,sys; d=yaml.safe_load(open('$backup_file')); print(d.get('spec',{}).get('rules',[{}])[0].get('host',''))" 2>/dev/null || echo "")
+            tls_secret_name="${TLS_SECRET}"
+            tls_host="${MAIN_HOSTNAME}"
+            if [[ "$local_host" == *"auth."* && -n "$AUTH_HOSTNAME" && "$AUTH_CERT_READY" == "True" ]]; then
+                tls_secret_name="${KC_TLS_SECRET}"
+                tls_host="${AUTH_HOSTNAME}"
+            fi
+
+            # Re-apply the backup, then patch in TLS (no cert-manager annotation)
+            kubectl apply -f "$backup_file" 2>/dev/null || true
+            kubectl patch ingress "$ing_name" -n "${OSMO_NS}" --type=merge -p "$(cat <<PATCH
+{
+  "metadata": {
+    "annotations": {
+      "nginx.ingress.kubernetes.io/ssl-redirect": "true"
+    }
+  },
+  "spec": {
+    "tls": [{
+      "hosts": ["${tls_host}"],
+      "secretName": "${tls_secret_name}"
+    }]
+  }
+}
+PATCH
+)" && log_success "  ${ing_name}: restored with TLS" || log_warning "  ${ing_name}: failed to restore"
+        done
+
+        # Clean up backups
+        rm -rf /tmp/osmo-tls-backup
+    elif [[ "$OSMO_DEPLOYED" == "true" && "$CERT_READY" != "True" ]]; then
+        # Certificate failed — restore ingresses without TLS so the app still works
+        log_warning "Certificate not ready. Restoring Ingress resources without TLS..."
+        for ing_name in "${REMOVED_INGRESSES[@]}"; do
+            backup_file="/tmp/osmo-tls-backup/${ing_name}.yaml"
+            [[ ! -f "$backup_file" ]] && continue
+            kubectl apply -f "$backup_file" 2>/dev/null || true
+            log_info "  ${ing_name}: restored (no TLS)"
+        done
+        rm -rf /tmp/osmo-tls-backup
+        log_info "Fix the certificate issue and re-run this script."
+    fi
+
+    # -------------------------------------------------------------------------
+    # Final cleanup: remove any lingering solver pods
+    # -------------------------------------------------------------------------
+    kubectl delete pods -n "${OSMO_NS}" -l acme.cert-manager.io/http01-solver=true --ignore-not-found 2>/dev/null || true
+    kubectl delete pods -n "${INGRESS_NS}" -l acme.cert-manager.io/http01-solver=true --ignore-not-found 2>/dev/null || true
 
 fi  # end TLS_MODE
 

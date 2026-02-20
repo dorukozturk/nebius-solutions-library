@@ -1,7 +1,7 @@
 #!/bin/bash
 # Uninstall NGINX Ingress Controller (deployed by 03-deploy-nginx-ingress.sh)
 set -e
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 source "${SCRIPT_DIR}/lib/common.sh"
 INGRESS_NAMESPACE="${INGRESS_NAMESPACE:-ingress-nginx}"
 INGRESS_RELEASE_NAME="${INGRESS_RELEASE_NAME:-ingress-nginx}"

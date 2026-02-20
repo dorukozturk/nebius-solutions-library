@@ -138,11 +138,7 @@ else
         printf "Enter choice [1-${#VALID_REGIONS[@]}]: "
         read -r choice
         if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#VALID_REGIONS[@]} )); then
-            NEBIUS_SELECTED_REGION="${VALID_REGIONS[$choice]}"
-            # bash arrays are 0-based, zsh arrays are 1-based; adjust if needed
-            if [[ -z "$NEBIUS_SELECTED_REGION" ]]; then
-                NEBIUS_SELECTED_REGION="${VALID_REGIONS[$((choice - 1))]}"
-            fi
+            NEBIUS_SELECTED_REGION="${VALID_REGIONS[$((choice - 1))]}"
             break
         fi
         echo "Invalid selection. Please enter a number between 1 and ${#VALID_REGIONS[@]}."
@@ -1743,9 +1739,9 @@ cat > /tmp/vault-patch.json << 'PATCH_EOF'
 PATCH_EOF
 
 # All OSMO deployments that need the vault-secrets volume for MEK
-OSMO_DEPLOYMENTS="osmo-service osmo-worker osmo-agent osmo-logger osmo-delayed-job-monitor osmo-router"
+OSMO_DEPLOYMENTS=(osmo-service osmo-worker osmo-agent osmo-logger osmo-delayed-job-monitor osmo-router)
 
-for deploy in $OSMO_DEPLOYMENTS; do
+for deploy in "${OSMO_DEPLOYMENTS[@]}"; do
     if kubectl get deployment/$deploy -n "${OSMO_NAMESPACE}" &>/dev/null; then
         # Check if vault-secrets volume already exists
         EXISTING_VOL=$(kubectl get deployment/$deploy -n "${OSMO_NAMESPACE}" \
@@ -1771,7 +1767,7 @@ rm -f /tmp/vault-patch.json
 
 # Wait for rollouts to complete
 log_info "Waiting for deployments to roll out with new configuration..."
-for deploy in $OSMO_DEPLOYMENTS; do
+for deploy in "${OSMO_DEPLOYMENTS[@]}"; do
     if kubectl get deployment/$deploy -n "${OSMO_NAMESPACE}" &>/dev/null; then
         kubectl rollout status deployment/$deploy -n "${OSMO_NAMESPACE}" --timeout=180s || \
             log_warning "  Timeout waiting for $deploy rollout"
@@ -1792,9 +1788,9 @@ if [[ "$AUTH_ENABLED" == "true" ]]; then
 else
     log_info "Verifying service ports (Envoy disabled)..."
 
-    OSMO_SERVICES="osmo-service osmo-router osmo-logger osmo-agent"
+    OSMO_SERVICES=(osmo-service osmo-router osmo-logger osmo-agent)
 
-    for svc in $OSMO_SERVICES; do
+    for svc in "${OSMO_SERVICES[@]}"; do
         if kubectl get svc "$svc" -n "${OSMO_NAMESPACE}" &>/dev/null; then
             CURRENT_TARGET=$(kubectl get svc "$svc" -n "${OSMO_NAMESPACE}" \
                 -o jsonpath='{.spec.ports[0].targetPort}' 2>/dev/null || echo "")
@@ -1822,7 +1818,7 @@ log_info "Verifying deployment configuration..."
 # Verify vault-secrets volumes are mounted
 echo ""
 echo "Volume configuration verification:"
-for deploy in $OSMO_DEPLOYMENTS; do
+for deploy in "${OSMO_DEPLOYMENTS[@]}"; do
     if kubectl get deployment/$deploy -n "${OSMO_NAMESPACE}" &>/dev/null; then
         VOL_CHECK=$(kubectl get deployment/$deploy -n "${OSMO_NAMESPACE}" \
             -o jsonpath='{.spec.template.spec.volumes[*].name}' 2>/dev/null | grep -w "vault-secrets" || echo "")
