@@ -305,7 +305,7 @@ variable "cosmos_embed1_replicas" {
 }
 
 variable "nemotron_nano_12b_v2_vl" {
-  description = "install nemotron-nano-12b-v2-vl (NAno2 VL)"
+  description = "install nemotron-nano-12b-v2-vl (Nano2 VL)"
   type        = bool
   default     = false
 }
