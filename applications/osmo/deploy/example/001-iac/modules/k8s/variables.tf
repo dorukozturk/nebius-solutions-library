@@ -175,6 +175,12 @@ variable "gpu_nodes_preemptible" {
   default     = false
 }
 
+variable "gpu_reservation_ids" {
+  description = "List of capacity block group IDs for GPU reservations"
+  type        = list(string)
+  default     = []
+}
+
 variable "gpu_nodes_driverfull_image" {
   description = "Use Nebius driverfull images with pre-installed NVIDIA drivers"
   type        = bool

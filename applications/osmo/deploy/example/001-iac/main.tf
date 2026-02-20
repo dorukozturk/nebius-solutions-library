@@ -91,6 +91,7 @@ module "k8s" {
   gpu_nodes_preemptible      = var.gpu_nodes_preemptible
   gpu_nodes_driverfull_image = var.gpu_nodes_driverfull_image
   gpu_drivers_preset         = local.gpu_drivers_preset
+  gpu_reservation_ids        = var.gpu_reservation_ids
 
   # Filestore
   enable_filestore = var.enable_filestore

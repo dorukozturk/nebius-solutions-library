@@ -145,6 +145,12 @@ resource "nebius_mk8s_v1_node_group" "gpu" {
     # Driverfull images (pre-installed NVIDIA drivers, no GPU Operator driver needed)
     gpu_settings = var.gpu_nodes_driverfull_image ? { drivers_preset = var.gpu_drivers_preset } : null
 
+    # Reservation policy for capacity block groups
+    reservation_policy = length(var.gpu_reservation_ids) > 0 ? {
+      policy          = "STRICT"
+      reservation_ids = var.gpu_reservation_ids
+    } : null
+
     # Preemptible configuration
     preemptible = var.gpu_nodes_preemptible ? {
       on_preemption = "STOP"
