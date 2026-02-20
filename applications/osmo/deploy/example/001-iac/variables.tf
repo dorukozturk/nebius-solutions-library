@@ -41,18 +41,18 @@ variable "project_name" {
 }
 
 # =============================================================================
-# Network Configuration
+# Network Configuration (existing default network and subnet)
+# Set automatically by nebius-env-init.sh via TF_VAR_network_id / TF_VAR_subnet_id
 # =============================================================================
 
-variable "vpc_cidr" {
-  description = "CIDR block for VPC subnet (/20 recommended - /16 may exhaust pool)"
+variable "network_id" {
+  description = "Existing VPC network ID (set by nebius-env-init.sh)"
   type        = string
-  default     = "10.0.0.0/20"
+}
 
-  validation {
-    condition     = can(cidrhost(var.vpc_cidr, 0))
-    error_message = "VPC CIDR must be a valid CIDR block"
-  }
+variable "subnet_id" {
+  description = "Existing VPC subnet ID (set by nebius-env-init.sh)"
+  type        = string
 }
 
 # =============================================================================

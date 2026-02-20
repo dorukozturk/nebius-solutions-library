@@ -7,12 +7,12 @@
 # -----------------------------------------------------------------------------
 output "network_id" {
   description = "VPC network ID"
-  value       = nebius_vpc_v1_network.main.id
+  value       = var.network_id
 }
 
 output "subnet_id" {
   description = "VPC subnet ID"
-  value       = nebius_vpc_v1_subnet.main.id
+  value       = var.subnet_id
 }
 
 # -----------------------------------------------------------------------------

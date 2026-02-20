@@ -3,23 +3,9 @@
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# VPC Network
+# VPC Network (uses existing default network and subnet from the project)
+# Set via nebius-env-init.sh -> TF_VAR_network_id / TF_VAR_subnet_id
 # -----------------------------------------------------------------------------
-resource "nebius_vpc_v1_network" "main" {
-  parent_id = var.parent_id
-  name      = "${var.name_prefix}-network"
-}
-
-resource "nebius_vpc_v1_subnet" "main" {
-  parent_id  = var.parent_id
-  name       = "${var.name_prefix}-subnet"
-  network_id = nebius_vpc_v1_network.main.id
-
-  # Use network's default pools - more reliable across regions
-  ipv4_private_pools = {
-    use_network_pools = true
-  }
-}
 
 # -----------------------------------------------------------------------------
 # Service Account for Storage
@@ -166,7 +152,7 @@ resource "nebius_msp_postgresql_v1alpha1_cluster" "main" {
   count      = var.enable_managed_postgresql ? 1 : 0
   parent_id  = var.parent_id
   name       = "${var.name_prefix}-postgresql"
-  network_id = nebius_vpc_v1_network.main.id
+  network_id = var.network_id
 
   config = {
     version       = var.postgresql_version

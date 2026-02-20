@@ -26,12 +26,6 @@ environment  = "dev"
 project_name = "osmo"
 
 # -----------------------------------------------------------------------------
-# Network Settings
-# -----------------------------------------------------------------------------
-# Note: /16 may exhaust VPC pool capacity. Using /20 (4,096 addresses) instead.
-vpc_cidr = "10.0.0.0/20"
-
-# -----------------------------------------------------------------------------
 # Kubernetes Cluster (PRIVATE - access via WireGuard)
 # -----------------------------------------------------------------------------
 k8s_version            = null   # Use latest

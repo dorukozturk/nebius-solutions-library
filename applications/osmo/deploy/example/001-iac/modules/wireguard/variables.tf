@@ -27,8 +27,9 @@ variable "subnet_id" {
 }
 
 variable "vpc_cidr" {
-  description = "VPC CIDR for routing"
+  description = "VPC CIDR for routing (unused, kept for future use)"
   type        = string
+  default     = ""
 }
 
 variable "wg_network" {

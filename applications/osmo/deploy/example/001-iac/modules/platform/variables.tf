@@ -23,13 +23,17 @@ variable "name_prefix" {
 }
 
 # -----------------------------------------------------------------------------
-# Network Configuration
+# Network Configuration (existing default network and subnet)
 # -----------------------------------------------------------------------------
 
-variable "vpc_cidr" {
-  description = "CIDR block for VPC subnet"
+variable "network_id" {
+  description = "Existing VPC network ID (set by nebius-env-init.sh)"
   type        = string
-  default     = "10.0.0.0/16"
+}
+
+variable "subnet_id" {
+  description = "Existing VPC subnet ID (set by nebius-env-init.sh)"
+  type        = string
 }
 
 # -----------------------------------------------------------------------------

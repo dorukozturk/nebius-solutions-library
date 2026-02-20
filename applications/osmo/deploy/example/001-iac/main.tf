@@ -13,8 +13,9 @@ module "platform" {
   region      = var.region
   name_prefix = local.name_prefix
 
-  # Network
-  vpc_cidr = var.vpc_cidr
+  # Network (existing default network and subnet)
+  network_id = var.network_id
+  subnet_id  = var.subnet_id
 
   # Storage
   storage_bucket_name = local.storage_bucket_name
@@ -58,7 +59,7 @@ module "k8s" {
   name_prefix = local.name_prefix
 
   # Network
-  subnet_id = module.platform.subnet_id
+  subnet_id = var.subnet_id
 
   # Cluster config
   k8s_version            = var.k8s_version
@@ -116,8 +117,7 @@ module "wireguard" {
   name_prefix = local.name_prefix
 
   # Network
-  subnet_id   = module.platform.subnet_id
-  vpc_cidr    = var.vpc_cidr
+  subnet_id   = var.subnet_id
   wg_network  = var.wireguard_network
 
   # Instance config

@@ -180,19 +180,53 @@ main() {
     export TF_VAR_parent_id="$NEBIUS_PROJECT_ID"
     export TF_VAR_region="$NEBIUS_REGION"
 
-    echo ""
-    echo -e "${GREEN}[✓]${NC} Environment variables set:"
-    echo "    NEBIUS_TENANT_ID   = $NEBIUS_TENANT_ID"
-    echo "    NEBIUS_PROJECT_ID  = $NEBIUS_PROJECT_ID"
-    echo "    NEBIUS_REGION      = $NEBIUS_REGION"
-    echo "    NEBIUS_IAM_TOKEN   = ${NEBIUS_IAM_TOKEN:0:20}... (truncated)"
-    echo "    TF_VAR_tenant_id   = $TF_VAR_tenant_id"
-    echo "    TF_VAR_parent_id   = $TF_VAR_parent_id"
-    echo "    TF_VAR_region      = $TF_VAR_region"
+    echo -e "${GREEN}[✓]${NC} Core environment variables set"
 
-    # Step 5: Verify connectivity
+    # Step 5: Discover default network and subnet
     echo ""
-    echo -e "${BLUE}Step 5: Verifying connectivity${NC}"
+    echo -e "${BLUE}Step 5: Discovering default network and subnet${NC}"
+
+    local network_json subnet_json
+    network_json=$("$nebius_path" vpc v1 network list --parent-id "$NEBIUS_PROJECT_ID" --format json 2>/dev/null)
+
+    local network_id network_name subnet_id subnet_name
+
+    if [[ -n "$network_json" ]]; then
+        network_id=$(echo "$network_json" | jq -r '(.items // .) | map(select(.metadata.name | startswith("default"))) | .[0].metadata.id // empty' 2>/dev/null)
+        network_name=$(echo "$network_json" | jq -r '(.items // .) | map(select(.metadata.name | startswith("default"))) | .[0].metadata.name // empty' 2>/dev/null)
+    fi
+
+    if [[ -z "$network_id" ]]; then
+        echo -e "${RED}[ERROR]${NC} No default network found in project $NEBIUS_PROJECT_ID"
+        echo "  Expected a network whose name starts with 'default'."
+        return 1
+    fi
+
+    echo -e "${GREEN}[✓]${NC} Found network: $network_name ($network_id)"
+
+    subnet_json=$("$nebius_path" vpc v1 subnet list --parent-id "$NEBIUS_PROJECT_ID" --format json 2>/dev/null)
+
+    if [[ -n "$subnet_json" ]]; then
+        subnet_id=$(echo "$subnet_json" | jq -r '(.items // .) | map(select(.metadata.name | startswith("default"))) | .[0].metadata.id // empty' 2>/dev/null)
+        subnet_name=$(echo "$subnet_json" | jq -r '(.items // .) | map(select(.metadata.name | startswith("default"))) | .[0].metadata.name // empty' 2>/dev/null)
+    fi
+
+    if [[ -z "$subnet_id" ]]; then
+        echo -e "${RED}[ERROR]${NC} No default subnet found in project $NEBIUS_PROJECT_ID"
+        echo "  Expected a subnet whose name starts with 'default'."
+        return 1
+    fi
+
+    echo -e "${GREEN}[✓]${NC} Found subnet:  $subnet_name ($subnet_id)"
+
+    export NEBIUS_NETWORK_ID="$network_id"
+    export NEBIUS_SUBNET_ID="$subnet_id"
+    export TF_VAR_network_id="$network_id"
+    export TF_VAR_subnet_id="$subnet_id"
+
+    # Step 6: Verify connectivity
+    echo ""
+    echo -e "${BLUE}Step 6: Verifying connectivity${NC}"
 
     if "$nebius_path" iam project get --id "$NEBIUS_PROJECT_ID" &>/dev/null; then
         echo -e "${GREEN}[✓]${NC} Successfully connected to Nebius project"
@@ -204,6 +238,17 @@ main() {
     echo "========================================"
     echo -e "${GREEN}Environment initialization complete!${NC}"
     echo "========================================"
+    echo ""
+    echo -e "${GREEN}[✓]${NC} Environment variables set:"
+    echo "    NEBIUS_TENANT_ID   = $NEBIUS_TENANT_ID"
+    echo "    NEBIUS_PROJECT_ID  = $NEBIUS_PROJECT_ID"
+    echo "    NEBIUS_REGION      = $NEBIUS_REGION"
+    echo "    NEBIUS_IAM_TOKEN   = ${NEBIUS_IAM_TOKEN:0:20}... (truncated)"
+    echo "    NEBIUS_NETWORK_ID  = $NEBIUS_NETWORK_ID"
+    echo "    NEBIUS_SUBNET_ID   = $NEBIUS_SUBNET_ID"
+    echo ""
+    echo "    Network: $network_name ($network_id)"
+    echo "    Subnet:  $subnet_name ($subnet_id)"
     echo ""
     echo "Next steps:"
     echo "  1. source ./secrets-init.sh           # Initialize MysteryBox secrets (recommended)"
