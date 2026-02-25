@@ -303,3 +303,21 @@ variable "cosmos_embed1_replicas" {
   type        = number
   default     = 1
 }
+
+variable "nemotron_nano_12b_v2_vl" {
+  description = "install nemotron-nano-12b-v2-vl (Nano2 VL)"
+  type        = bool
+  default     = false
+}
+
+variable "nemotron_nano_12b_v2_vl_version" {
+  description = "nemotron-nano-12b-v2-vl version"
+  type        = string
+  default     = "1.6.0"
+}
+
+variable "nemotron_nano_12b_v2_vl_replicas" {
+  description = "nemotron-nano-12b-v2-vl instances"
+  type        = number
+  default     = 1
+}
