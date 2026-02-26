@@ -17,8 +17,8 @@ NEBIUS_TENANT_ID="${NEBIUS_TENANT_ID:-}"        # e.g. tenant-abc123def456
 NEBIUS_PROJECT_ID="${NEBIUS_PROJECT_ID:-}"      # e.g. project-abc123def456
 NEBIUS_REGION="${NEBIUS_REGION:-eu-north1}"     # eu-north1, eu-north2, eu-west1, me-west1, uk-south1, us-central1
 
-export OSMO_INGRESS_HOSTNAME="${OSMO_INGRESS_HOSTNAME:-<YOUR-DOMAIN>.eu-north1.osmo.nebius.cloud}"
-export KEYCLOAK_HOSTNAME="${KEYCLOAK_HOSTNAME:-auth.${OSMO_INGRESS_HOSTNAME}}"
+OSMO_INGRESS_HOSTNAME="${OSMO_INGRESS_HOSTNAME:-}"  # e.g. myapp.eu-north1.osmo.nebius.cloud
+KEYCLOAK_HOSTNAME="${KEYCLOAK_HOSTNAME:-}"          # e.g. auth.myapp.eu-north1.osmo.nebius.cloud
 # ========================================
 
 # Colors
@@ -166,6 +166,8 @@ main() {
     export NEBIUS_TENANT_ID
     export NEBIUS_PROJECT_ID
     export NEBIUS_REGION
+    export OSMO_INGRESS_HOSTNAME
+    export KEYCLOAK_HOSTNAME
 
     # Get IAM token for Terraform provider authentication
     echo "Getting IAM token for Terraform..."
@@ -248,7 +250,9 @@ main() {
     echo "    NEBIUS_REGION      = $NEBIUS_REGION"
     echo "    NEBIUS_IAM_TOKEN   = ${NEBIUS_IAM_TOKEN:0:20}... (truncated)"
     echo "    NEBIUS_NETWORK_ID  = $NEBIUS_NETWORK_ID"
-    echo "    NEBIUS_SUBNET_ID   = $NEBIUS_SUBNET_ID"
+    echo "    NEBIUS_SUBNET_ID          = $NEBIUS_SUBNET_ID"
+    echo "    OSMO_INGRESS_HOSTNAME     = $OSMO_INGRESS_HOSTNAME"
+    echo "    KEYCLOAK_HOSTNAME         = $KEYCLOAK_HOSTNAME"
     echo ""
     echo "    Network: $network_name ($network_id)"
     echo "    Subnet:  $subnet_name ($subnet_id)"

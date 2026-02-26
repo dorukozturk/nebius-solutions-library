@@ -56,7 +56,29 @@ done
 log_success "Port-forward ready"
 
 # -----------------------------------------------------------------------------
-# Step 1: Create GPU pod template
+# Step 1: Fix default_user pod template (remove GPU resources)
+# -----------------------------------------------------------------------------
+# The built-in default_user template includes nvidia.com/gpu which causes ALL
+# workflows (including CPU-only) to request the nvidia RuntimeClass. This fails
+# on CPU nodes. We move GPU resources to the gpu_tolerations template instead.
+log_info "Updating default_user pod template (removing GPU resources)..."
+
+RESPONSE=$(osmo_curl PUT "${OSMO_URL}/api/configs/pod_template/default_user" \
+  -w "\n%{http_code}" \
+  -d @"${SCRIPT_DIR}/default_user_pod_template.json")
+HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+BODY=$(echo "$RESPONSE" | sed '$d')
+
+if [[ "$HTTP_CODE" -ge 200 && "$HTTP_CODE" -lt 300 ]]; then
+    log_success "default_user pod template updated (HTTP ${HTTP_CODE})"
+else
+    log_error "Failed to update default_user pod template (HTTP ${HTTP_CODE})"
+    echo "Response: ${BODY}"
+    exit 1
+fi
+
+# -----------------------------------------------------------------------------
+# Step 2: Create GPU pod template
 # -----------------------------------------------------------------------------
 log_info "Creating gpu_tolerations pod template..."
 
@@ -80,7 +102,7 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-# Step 2: Create GPU platform
+# Step 3: Create GPU platform
 # -----------------------------------------------------------------------------
 log_info "Creating gpu platform in default pool..."
 
@@ -99,7 +121,7 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-# Step 3: Verify configuration
+# Step 4: Verify configuration
 # -----------------------------------------------------------------------------
 log_info "Verifying configuration..."
 
@@ -112,7 +134,7 @@ echo "GPU platform config:"
 osmo_curl GET "${OSMO_URL}/api/configs/pool/default" | jq '.platforms.gpu'
 
 # -----------------------------------------------------------------------------
-# Step 4: Check GPU resources
+# Step 5: Check GPU resources
 # -----------------------------------------------------------------------------
 log_info "Checking GPU resources..."
 sleep 3  # Wait for backend to pick up changes
@@ -126,6 +148,12 @@ if [[ "$RESOURCE_COUNT" -gt 0 ]]; then
     echo "GPU resources:"
     echo "$RESOURCE_JSON" | jq '.resources[] | select(.allocatable_fields.gpu != null) | {name: .name, gpu: .allocatable_fields.gpu, cpu: .allocatable_fields.cpu, memory: .allocatable_fields.memory}'
 fi
+
+# -----------------------------------------------------------------------------
+# Step 6: Set default pool profile
+# -----------------------------------------------------------------------------
+log_info "Setting default pool to 'default'..."
+osmo profile set pool default 2>/dev/null && log_success "Default pool set" || log_warning "Could not set default pool (set manually: osmo profile set pool default)"
 
 # -----------------------------------------------------------------------------
 # Done
