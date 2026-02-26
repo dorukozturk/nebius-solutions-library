@@ -19,6 +19,13 @@ echo ""
 # Check prerequisites
 check_kubectl || exit 1
 
+if [[ -z "${OSMO_INGRESS_HOSTNAME:-}" ]]; then
+    log_error "OSMO_INGRESS_HOSTNAME is not set."
+    echo "  Source your environment first: source ../000-prerequisites/nebius-env-init.sh"
+    echo "  Or set it manually: export OSMO_INGRESS_HOSTNAME=<your-domain>"
+    exit 1
+fi
+
 # -----------------------------------------------------------------------------
 # Start port-forward
 # -----------------------------------------------------------------------------

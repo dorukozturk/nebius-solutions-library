@@ -27,9 +27,15 @@ log_info "Retrieving storage configuration from Terraform..."
 S3_BUCKET=$(get_tf_output "storage_bucket.name" "../001-iac" 2>/dev/null || echo "")
 S3_ENDPOINT=$(get_tf_output "storage_bucket.endpoint" "../001-iac" 2>/dev/null || echo "")
 
+# Require NEBIUS_REGION (set by nebius-env-init.sh)
+if [[ -z "${NEBIUS_REGION:-}" ]]; then
+    log_error "NEBIUS_REGION is not set. Run 'source ../000-prerequisites/nebius-env-init.sh' first."
+    exit 1
+fi
+
 # Default endpoint if not set
 if [[ -z "$S3_ENDPOINT" ]]; then
-    S3_ENDPOINT="https://storage.eu-north1.nebius.cloud"
+    S3_ENDPOINT="https://storage.${NEBIUS_REGION}.nebius.cloud"
 fi
 
 if [[ -z "$S3_BUCKET" ]]; then
@@ -142,7 +148,7 @@ fi
 # Format: tos://<endpoint>/<bucket>
 S3_HOST=$(echo "$S3_ENDPOINT" | sed 's|https://||')
 BACKEND_URI="tos://${S3_HOST}/${S3_BUCKET}"
-REGION="eu-north1"
+REGION="${NEBIUS_REGION}"
 
 log_success "Storage credentials retrieved"
 

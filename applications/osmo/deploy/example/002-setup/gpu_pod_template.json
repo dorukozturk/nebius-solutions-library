@@ -14,7 +14,7 @@
           "env": [
             {
               "name": "AWS_ENDPOINT_URL_S3",
-              "value": "https://storage.me-west1.nebius.cloud:443"
+              "value": "https://storage.{{NEBIUS_REGION}}.nebius.cloud:443"
             },
             {
               "name": "AWS_S3_FORCE_PATH_STYLE",
@@ -22,7 +22,7 @@
             },
             {
               "name": "AWS_DEFAULT_REGION",
-              "value": "us-east-1"
+              "value": "{{NEBIUS_REGION}}"
             },
             {
               "name": "OSMO_LOGIN_DEV",
@@ -32,14 +32,22 @@
               "name": "OSMO_SKIP_DATA_AUTH",
               "value": "1"
             }
-          ]
+          ],
+          "resources": {
+            "limits": {
+              "nvidia.com/gpu": "{{USER_GPU}}"
+            },
+            "requests": {
+              "nvidia.com/gpu": "{{USER_GPU}}"
+            }
+          }
         },
         {
           "name": "osmo-ctrl",
           "env": [
             {
               "name": "AWS_ENDPOINT_URL_S3",
-              "value": "https://storage.me-west1.nebius.cloud:443"
+              "value": "https://storage.{{NEBIUS_REGION}}.nebius.cloud:443"
             },
             {
               "name": "AWS_S3_FORCE_PATH_STYLE",
@@ -47,7 +55,7 @@
             },
             {
               "name": "AWS_DEFAULT_REGION",
-              "value": "us-east-1"
+              "value": "{{NEBIUS_REGION}}"
             },
             {
               "name": "OSMO_LOGIN_DEV",

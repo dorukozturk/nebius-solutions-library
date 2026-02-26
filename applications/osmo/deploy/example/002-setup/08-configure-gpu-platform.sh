@@ -11,6 +11,12 @@ source "${SCRIPT_DIR}/defaults.sh"
 OSMO_URL="${OSMO_URL:-http://localhost:8080}"
 OSMO_NAMESPACE="${OSMO_NAMESPACE:-osmo}"
 
+# Require NEBIUS_REGION (set by nebius-env-init.sh)
+if [[ -z "${NEBIUS_REGION:-}" ]]; then
+    echo "ERROR: NEBIUS_REGION is not set. Run 'source ../000-prerequisites/nebius-env-init.sh' first."
+    exit 1
+fi
+
 echo ""
 echo "========================================"
 echo "  OSMO GPU Platform Configuration"
@@ -54,9 +60,14 @@ log_success "Port-forward ready"
 # -----------------------------------------------------------------------------
 log_info "Creating gpu_tolerations pod template..."
 
+# Substitute {{NEBIUS_REGION}} placeholder in the template
+GPU_POD_TEMPLATE_RESOLVED="/tmp/gpu_pod_template_resolved.json"
+sed "s/{{NEBIUS_REGION}}/${NEBIUS_REGION}/g" "${SCRIPT_DIR}/gpu_pod_template.json" > "${GPU_POD_TEMPLATE_RESOLVED}"
+
 RESPONSE=$(osmo_curl PUT "${OSMO_URL}/api/configs/pod_template/gpu_tolerations" \
   -w "\n%{http_code}" \
-  -d @"${SCRIPT_DIR}/gpu_pod_template.json")
+  -d @"${GPU_POD_TEMPLATE_RESOLVED}")
+rm -f "${GPU_POD_TEMPLATE_RESOLVED}"
 HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
 BODY=$(echo "$RESPONSE" | sed '$d')
 

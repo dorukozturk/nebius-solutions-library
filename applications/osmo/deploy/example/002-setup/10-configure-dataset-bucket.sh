@@ -27,41 +27,14 @@ DATASET_BUCKET_NAME="${DATASET_BUCKET_NAME:-nebius}"
 check_kubectl || exit 1
 
 # -----------------------------------------------------------------------------
-# Select Nebius Region
+# Nebius Region (from nebius-env-init.sh)
 # -----------------------------------------------------------------------------
-VALID_REGIONS=("eu-north1" "me-west1")
-
-if [[ -n "${NEBIUS_REGION:-}" ]]; then
-    REGION="$NEBIUS_REGION"
-    matched=false
-    for r in "${VALID_REGIONS[@]}"; do
-        [[ "$r" == "$REGION" ]] && matched=true && break
-    done
-    if ! $matched; then
-        log_error "Invalid NEBIUS_REGION '${REGION}'. Valid options: ${VALID_REGIONS[*]}"
-        exit 1
-    fi
-    log_info "Using region from NEBIUS_REGION: ${REGION}"
-else
-    echo "Select the Nebius region for the storage bucket:"
-    echo ""
-    _idx=1
-    for _r in "${VALID_REGIONS[@]}"; do
-        echo "  ${_idx}) ${_r}"
-        _idx=$((_idx + 1))
-    done
-    echo ""
-    while true; do
-        printf "Enter choice [1-${#VALID_REGIONS[@]}]: "
-        read -r choice
-        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#VALID_REGIONS[@]} )); then
-            REGION="${VALID_REGIONS[$((choice - 1))]}"
-            break
-        fi
-        echo "Invalid selection. Please enter a number between 1 and ${#VALID_REGIONS[@]}."
-    done
-    log_info "Selected region: ${REGION}"
+if [[ -z "${NEBIUS_REGION:-}" ]]; then
+    log_error "NEBIUS_REGION is not set. Run 'source ../000-prerequisites/nebius-env-init.sh' first."
+    exit 1
 fi
+REGION="$NEBIUS_REGION"
+log_info "Using region: ${REGION}"
 
 S3_REGION_FOR_BOTO="${REGION}"
 
