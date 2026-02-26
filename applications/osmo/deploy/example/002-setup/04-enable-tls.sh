@@ -441,10 +441,10 @@ EOF
 
         log_info "Waiting for certificate '${cert_name}' (up to ${max_wait}s)..."
         while [[ $elapsed -lt $max_wait ]]; do
-            local status
-            status=$(kubectl get certificate "${cert_name}" -n "${OSMO_NS}" \
+            local cert_status
+            cert_status=$(kubectl get certificate "${cert_name}" -n "${OSMO_NS}" \
                 -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
-            if [[ "$status" == "True" ]]; then
+            if [[ "$cert_status" == "True" ]]; then
                 log_success "Certificate '${cert_name}' issued and ready"
                 return 0
             fi

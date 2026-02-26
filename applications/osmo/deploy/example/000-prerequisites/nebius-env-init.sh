@@ -16,6 +16,9 @@
 NEBIUS_TENANT_ID="${NEBIUS_TENANT_ID:-}"        # e.g. tenant-abc123def456
 NEBIUS_PROJECT_ID="${NEBIUS_PROJECT_ID:-}"      # e.g. project-abc123def456
 NEBIUS_REGION="${NEBIUS_REGION:-eu-north1}"     # eu-north1, eu-north2, eu-west1, me-west1, uk-south1, us-central1
+
+export OSMO_INGRESS_HOSTNAME="${OSMO_INGRESS_HOSTNAME:-<YOUR-DOMAIN>.eu-north1.osmo.nebius.cloud}"
+export KEYCLOAK_HOSTNAME="${KEYCLOAK_HOSTNAME:-auth.${OSMO_INGRESS_HOSTNAME}}"
 # ========================================
 
 # Colors

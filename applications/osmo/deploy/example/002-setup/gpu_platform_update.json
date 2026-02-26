@@ -3,7 +3,7 @@
     "description": "GPU platform for L40S nodes",
     "host_network_allowed": false,
     "privileged_allowed": false,
-    "allowed_mounts": [],
+    "allowed_mounts": ["/mnt/data"],
     "default_mounts": [],
     "default_variables": {
       "USER_GPU": 1
