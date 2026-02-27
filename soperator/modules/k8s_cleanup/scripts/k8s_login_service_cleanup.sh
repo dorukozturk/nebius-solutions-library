@@ -5,6 +5,14 @@ context="${K8S_CLUSTER_CONTEXT:?context is required}"
 namespace="${SOPERATOR_NAMESPACE:?namespace is required}"
 service="${LOGIN_SERVICE_NAME:?service name is required}"
 
+if [ -n "${K8S_CLUSTER_ID:-}" ]; then
+  nebius mk8s cluster get-credentials \
+    --context-name "$context" \
+    --external \
+    --force \
+    --id "$K8S_CLUSTER_ID"
+fi
+
 system_namespace="${namespace}-system"
 
 if ! kubectl get namespace "$namespace" --context "$context" >/dev/null 2>&1; then
