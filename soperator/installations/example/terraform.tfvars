@@ -441,6 +441,7 @@ slurm_exporter_enabled = true
 # - "prod_quick" - run all health-checks except those that take long. Takes additional 10 minutes (H100) - 30 minutes (B300).
 # - "testing" - to be used for Soperator E2E tests.
 # - "dev" - to be used for Soperator development clusters.
+# - "essential" - skip most of checks and run only essential ones. Don't use in production.
 # ---
 active_checks_scope = ""
 
