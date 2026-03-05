@@ -16,11 +16,13 @@ packages:
 
 %{ if enable_filestore ~}
 runcmd:
-  # Mount filestore if attached
+  # Mount filestore if attached (virtiofs is not a block device, check sysfs tags)
   - |
-    if [ -b /dev/disk/by-id/virtio-data ]; then
+    if grep -qs '^data$' /sys/fs/virtiofs/*/tag 2>/dev/null; then
       mkdir -p /mnt/data
       mount -t virtiofs data /mnt/data || true
-      echo "data /mnt/data virtiofs defaults 0 0" >> /etc/fstab
+      if ! grep -qs 'virtiofs.*mnt/data' /etc/fstab; then
+        echo "data /mnt/data virtiofs defaults 0 0" >> /etc/fstab
+      fi
     fi
 %{ endif ~}

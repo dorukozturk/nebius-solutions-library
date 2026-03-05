@@ -490,12 +490,17 @@ if kubectl get statefulset redis-master -n "${OSMO_NAMESPACE}" &>/dev/null; then
 else
     helm upgrade --install redis bitnami/redis \
         --namespace "${OSMO_NAMESPACE}" \
+        --version 25.3.1 \
         --set architecture=standalone \
         --set auth.enabled=false \
-        --set master.persistence.size=1Gi \
-        --set master.resources.requests.cpu=100m \
-        --set master.resources.requests.memory=128Mi \
-        --wait --timeout 5m
+        --set networkPolicy.enabled=false \
+        --set master.persistence.size=50Gi \
+        --set master.resources.requests.cpu=8 \
+        --set master.resources.requests.memory=52820Mi \
+        --set master.resources.limits.cpu=8 \
+        --set master.resources.limits.memory=52820Mi \
+        --set commonConfiguration="aof-load-corrupt-tail-max-size 10000000" \
+        --wait --timeout 10m
     
     log_success "Redis deployed"
 fi
@@ -674,7 +679,7 @@ fi)
 resources:
   requests:
     cpu: "500m"
-    memory: "512Mi"
+    memory: "768Mi"
   limits:
     cpu: "2"
     memory: "1Gi"

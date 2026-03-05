@@ -140,6 +140,11 @@ output "gpu_nodes_driverfull_image" {
   value       = var.gpu_nodes_driverfull_image
 }
 
+output "gpu_nodes_platform" {
+  description = "GPU platform type (e.g. gpu-h100-sxm, gpu-h200-sxm)"
+  value       = var.gpu_nodes_platform
+}
+
 # -----------------------------------------------------------------------------
 # Connection Instructions
 # -----------------------------------------------------------------------------

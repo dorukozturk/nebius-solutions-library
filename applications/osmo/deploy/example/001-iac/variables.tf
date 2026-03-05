@@ -311,7 +311,7 @@ variable "postgresql_platform" {
 variable "postgresql_preset" {
   description = "PostgreSQL resource preset (2vcpu-8gb is minimum)"
   type        = string
-  default     = "2vcpu-8gb"
+  default     = "4vcpu-16gb"
 }
 
 variable "postgresql_disk_type" {

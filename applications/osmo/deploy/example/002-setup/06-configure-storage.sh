@@ -218,6 +218,28 @@ fi
 rm -f /tmp/workflow_log_config.json /tmp/workflow_data_config.json
 
 # -----------------------------------------------------------------------------
+# Configure Workflow Limits
+# -----------------------------------------------------------------------------
+log_info "Configuring workflow limits (max_num_tasks=200)..."
+
+WORKFLOW_LIMITS_CONFIG=$(cat <<EOF
+{
+  "max_num_tasks": 200
+}
+EOF
+)
+
+echo "$WORKFLOW_LIMITS_CONFIG" > /tmp/workflow_limits_config.json
+
+if osmo_config_update WORKFLOW /tmp/workflow_limits_config.json "Configure workflow limits"; then
+    log_success "Workflow limits configured (max_num_tasks=200)"
+else
+    log_warning "Failed to configure workflow limits (may require newer OSMO version)"
+fi
+
+rm -f /tmp/workflow_limits_config.json
+
+# -----------------------------------------------------------------------------
 # Verify Configuration
 # -----------------------------------------------------------------------------
 log_info "Verifying storage configuration..."

@@ -60,7 +60,7 @@ filestore_size_gib = 1024
 # -----------------------------------------------------------------------------
 # Platform depends on region: cpu-e2 (eu-north1), cpu-d3 (all other regions)
 # postgresql_platform    = null           # Auto: cpu-e2 (eu-north1), cpu-d3 (other regions)
-postgresql_preset        = "2vcpu-8gb"    # Available presets vary by region
+postgresql_preset        = "4vcpu-16gb"   # Available presets vary by region
 # postgresql_disk_type   = null           # Auto: network-ssd (eu-north1), nbs-csi-sc (other regions)
 postgresql_disk_size_gib = 50
 postgresql_host_count    = 1

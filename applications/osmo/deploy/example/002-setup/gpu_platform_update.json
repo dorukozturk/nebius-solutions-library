@@ -1,6 +1,6 @@
 {
   "configs": {
-    "description": "GPU platform for L40S nodes",
+    "description": "GPU platform",
     "host_network_allowed": false,
     "privileged_allowed": false,
     "allowed_mounts": ["/mnt/data"],
@@ -9,6 +9,6 @@
       "USER_GPU": 1
     },
     "resource_validations": [],
-    "override_pod_template": ["gpu_tolerations"]
+    "override_pod_template": ["gpu_tolerations", "shm"]
   }
 }
