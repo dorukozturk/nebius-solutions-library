@@ -12,10 +12,10 @@
 # Usage:
 #   export REMOTE_CONTROL_PLANE_URL=https://os1.eu-north1.osmo.nebius.cloud
 #   export REMOTE_SERVICE_TOKEN=<token>
-#   ./11-connect-remote-control-plane.sh
+#   ./99a-connect-remote-control-plane.sh
 #
 #   Or with positional args:
-#   ./11-connect-remote-control-plane.sh <url> <token>
+#   ./99a-connect-remote-control-plane.sh <url> <token>
 #
 
 set -e
@@ -53,9 +53,9 @@ if [[ -z "$REMOTE_CONTROL_PLANE_URL" ]]; then
     echo "Usage:"
     echo "  export REMOTE_CONTROL_PLANE_URL=https://os1.eu-north1.osmo.nebius.cloud"
     echo "  export REMOTE_SERVICE_TOKEN=<token>"
-    echo "  ./11-connect-remote-control-plane.sh"
+    echo "  ./99a-connect-remote-control-plane.sh"
     echo ""
-    echo "  Or: ./11-connect-remote-control-plane.sh <url> <token>"
+    echo "  Or: ./99a-connect-remote-control-plane.sh <url> <token>"
     exit 1
 fi
 
@@ -108,7 +108,7 @@ log_info "Checking for existing osmo-operator Helm release..."
 
 if ! helm status osmo-operator -n "${OSMO_OPERATOR_NAMESPACE}" &>/dev/null; then
     log_error "No osmo-operator Helm release found in namespace ${OSMO_OPERATOR_NAMESPACE}"
-    log_error "Deploy the backend operator first: ./05-deploy-osmo-backend.sh"
+    log_error "Deploy the backend operator first: ./06-deploy-osmo-backend.sh"
     exit 1
 fi
 log_success "osmo-operator release found"

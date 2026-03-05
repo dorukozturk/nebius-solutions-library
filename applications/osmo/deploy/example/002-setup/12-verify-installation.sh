@@ -21,7 +21,7 @@
 #   - NEBIUS_REGION set (run: source ../000-prerequisites/nebius-env-init.sh)
 #
 # Usage:
-#   ./10-verify-installation.sh
+#   ./12-verify-installation.sh
 #
 # Environment variables (optional overrides):
 #   OSMO_URL                 OSMO API URL (default: http://localhost:8080)

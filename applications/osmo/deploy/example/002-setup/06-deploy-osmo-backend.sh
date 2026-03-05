@@ -50,7 +50,7 @@ if [[ -z "${OSMO_SERVICE_URL:-}" ]]; then
             log_success "In-cluster Agent URL: ${OSMO_SERVICE_URL}"
         else
             echo ""
-            log_error "Could not detect OSMO Agent service. Deploy OSMO first: ./04-deploy-osmo-control-plane.sh"
+            log_error "Could not detect OSMO Agent service. Deploy OSMO first: ./05-deploy-osmo-control-plane.sh"
             log_error "Note: Backend operators require osmo-agent service for WebSocket connections"
             exit 1
         fi
@@ -406,5 +406,5 @@ else
 fi
 echo ""
 echo "Next step - Configure Storage:"
-echo "  ./06-configure-storage.sh"
+echo "  ./07-configure-storage.sh"
 echo ""

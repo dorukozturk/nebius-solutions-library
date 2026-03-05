@@ -1868,7 +1868,7 @@ elif [[ -n "$INGRESS_URL" ]]; then
     log_info "Auto-detected service URL: ${TARGET_SERVICE_URL}"
 else
     log_warning "Could not detect Ingress URL. Skipping service_base_url configuration."
-    log_warning "Run ./07-configure-service-url.sh manually after verifying the Ingress."
+    log_warning "Run ./08-configure-service-url.sh manually after verifying the Ingress."
     TARGET_SERVICE_URL=""
 fi
 
@@ -1920,15 +1920,15 @@ SVCEOF
                 if [[ "$NEW_SVC_URL" == "$TARGET_SERVICE_URL" ]]; then
                     log_success "service_base_url configured: ${NEW_SVC_URL}"
                 else
-                    log_warning "service_base_url verification failed. Run ./07-configure-service-url.sh manually."
+                    log_warning "service_base_url verification failed. Run ./08-configure-service-url.sh manually."
                 fi
             else
-                log_warning "Failed to set service_base_url. Run ./07-configure-service-url.sh manually."
+                log_warning "Failed to set service_base_url. Run ./08-configure-service-url.sh manually."
             fi
             rm -f /tmp/service_url_fix.json
         fi
     else
-        log_warning "Port-forward not ready. Run ./07-configure-service-url.sh manually."
+        log_warning "Port-forward not ready. Run ./08-configure-service-url.sh manually."
     fi
 
     _cleanup_pf
@@ -2009,5 +2009,5 @@ echo "Ingress resources:"
 kubectl get ingress -n "${OSMO_NAMESPACE}" 2>/dev/null || true
 echo ""
 echo "Next step - Deploy Backend Operator:"
-echo "  ./05-deploy-osmo-backend.sh"
+echo "  ./06-deploy-osmo-backend.sh"
 echo ""

@@ -732,7 +732,7 @@ else
         echo "  1. Certificates stored in: ${CERT_DIR}"
         echo "     Renewal: re-run this script before the 90-day expiry"
     fi
-    echo "  2. Deploy OSMO: ./04-deploy-osmo-control-plane.sh"
+    echo "  2. Deploy OSMO: ./05-deploy-osmo-control-plane.sh"
     echo "     (It will auto-detect the TLS cert and create HTTPS Ingress)"
     if [[ -n "$AUTH_HOSTNAME" ]]; then
         echo "  3. Keycloak will be exposed at https://${AUTH_HOSTNAME}"
