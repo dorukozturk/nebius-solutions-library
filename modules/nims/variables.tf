@@ -160,3 +160,165 @@ variable "qwen3-next-80b-a3b-instruct_replicas" {
   type        = number
   default     = 1
 }
+
+variable "molmim" {
+  description = "install molmim"
+  type        = bool
+  default     = false
+}
+
+variable "molmim_version" {
+  description = "molmim version"
+  type        = string
+  default     = "1.0.0"
+}
+
+variable "molmim_replicas" {
+  description = "molmim instances"
+  type        = number
+  default     = 1
+}
+
+variable "diffdock" {
+  description = "install diffdock"
+  type        = bool
+  default     = false
+}
+
+variable "diffdock_version" {
+  description = "diffdock version"
+  type        = string
+  default     = "latest"
+}
+
+variable "diffdock_replicas" {
+  description = "diffdock instances"
+  type        = number
+  default     = 1
+}
+
+variable "proteinmpnn" {
+  description = "install proteinmpnn"
+  type        = bool
+  default     = false
+}
+
+variable "proteinmpnn_version" {
+  description = "proteinmpnn version"
+  type        = string
+  default     = "1.0.2"
+}
+
+variable "proteinmpnn_replicas" {
+  description = "proteinmpnn instances"
+  type        = number
+  default     = 1
+}
+
+variable "rfdiffusion" {
+  description = "install rfdiffusion"
+  type        = bool
+  default     = false
+}
+
+variable "rfdiffusion_version" {
+  description = "rfdiffusion version"
+  type        = string
+  default     = "2.2.0"
+}
+
+variable "rfdiffusion_replicas" {
+  description = "rfdiffusion instances"
+  type        = number
+  default     = 1
+}
+
+variable "cosmos_reason1_7b" {
+  description = "install cosmos-reason1-7b"
+  type        = bool
+  default     = false
+}
+
+variable "cosmos_reason1_7b_version" {
+  description = "cosmos-reason1-7b version"
+  type        = string
+  default     = "latest"
+}
+
+variable "cosmos_reason1_7b_replicas" {
+  description = "cosmos-reason1-7b instances"
+  type        = number
+  default     = 1
+}
+
+variable "cosmos_reason2_8b" {
+  description = "install cosmos-reason2-8b"
+  type        = bool
+  default     = false
+}
+
+variable "cosmos_reason2_8b_version" {
+  description = "cosmos-reason2-8b version"
+  type        = string
+  default     = "1.6.0"
+}
+
+variable "cosmos_reason2_8b_replicas" {
+  description = "cosmos-reason2-8b instances"
+  type        = number
+  default     = 1
+}
+
+variable "cosmos_reason2_2b" {
+  description = "install cosmos-reason2-2b"
+  type        = bool
+  default     = false
+}
+
+variable "cosmos_reason2_2b_version" {
+  description = "cosmos-reason2-2b version"
+  type        = string
+  default     = "1.6.0"
+}
+
+variable "cosmos_reason2_2b_replicas" {
+  description = "cosmos-reason2-2b instances"
+  type        = number
+  default     = 1
+}
+
+variable "cosmos_embed1" {
+  description = "install cosmos-embed1"
+  type        = bool
+  default     = false
+}
+
+variable "cosmos_embed1_version" {
+  description = "cosmos-embed1 version"
+  type        = string
+  default     = "1.0.0"
+}
+
+variable "cosmos_embed1_replicas" {
+  description = "cosmos-embed1 instances"
+  type        = number
+  default     = 1
+}
+
+variable "nemotron_nano_12b_v2_vl" {
+  description = "install nemotron-nano-12b-v2-vl (Nano2 VL)"
+  type        = bool
+  default     = false
+}
+
+variable "nemotron_nano_12b_v2_vl_version" {
+  description = "nemotron-nano-12b-v2-vl version"
+  type        = string
+  default     = "1.6.0"
+}
+
+variable "nemotron_nano_12b_v2_vl_replicas" {
+  description = "nemotron-nano-12b-v2-vl instances"
+  type        = number
+  default     = 1
+}

@@ -165,6 +165,7 @@ module "k8s_cleanup" {
   source = "../../modules/k8s_cleanup"
 
   k8s_cluster_context = module.k8s.cluster_context
+  k8s_cluster_id      = module.k8s.cluster_id
 
   depends_on = [
     module.k8s,
@@ -194,12 +195,11 @@ module "k8s" {
 
   etcd_cluster_size = var.etcd_cluster_size
 
-  node_group_system      = var.slurm_nodeset_system
-  node_group_controller  = var.slurm_nodeset_controller
-  node_group_workers     = local.node_group_workers
-  node_group_workers_v2  = local.node_group_workers_v2
-  node_group_login       = var.slurm_nodeset_login
-  slurm_nodesets_enabled = var.slurm_nodesets_enabled
+  node_group_system     = var.slurm_nodeset_system
+  node_group_controller = var.slurm_nodeset_controller
+  node_group_workers    = local.node_group_workers
+  node_group_workers_v2 = local.node_group_workers_v2
+  node_group_login      = var.slurm_nodeset_login
   node_group_accounting = {
     enabled = var.accounting_enabled
     spec    = var.slurm_nodeset_accounting
@@ -460,10 +460,8 @@ module "slurm" {
   shared_memory_size_gibibytes    = var.slurm_shared_memory_size_gibibytes
   slurm_partition_config_type     = var.slurm_partition_config_type
   slurm_partition_raw_config      = var.slurm_partition_raw_config
-  slurm_worker_features           = var.slurm_worker_features
   slurm_health_check_config       = var.slurm_health_check_config
 
-  slurm_nodesets_enabled    = var.slurm_nodesets_enabled
   slurm_nodesets_partitions = var.slurm_nodesets_partitions
   worker_nodesets = [for nodeset in var.slurm_nodeset_workers : {
     name            = nodeset.name
@@ -480,6 +478,7 @@ module "slurm" {
     gres_name        = lookup(module.resources.gres_name_by_platform, nodeset.resource.platform, null)
     gres_config      = lookup(module.resources.gres_config_by_platform, nodeset.resource.platform, null)
     create_partition = nodeset.create_partition != null ? nodeset.create_partition : false
+    ephemeral_nodes  = nodeset.ephemeral_nodes
   }]
 
   login_allocation_id            = module.k8s.static_ip_allocation_id
@@ -533,6 +532,7 @@ module "backups" {
   source = "../../modules/backups"
 
   k8s_cluster_context = module.k8s.cluster_context
+  k8s_cluster_id      = module.k8s.cluster_id
 
   iam_project_id      = var.iam_project_id
   iam_tenant_id       = var.iam_tenant_id

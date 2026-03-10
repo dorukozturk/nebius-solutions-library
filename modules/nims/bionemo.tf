@@ -1,4 +1,4 @@
-resource "kubernetes_deployment" "bionemo_notebook" {
+resource "kubernetes_deployment_v1" "bionemo_notebook" {
 
   count = var.bionemo ? var.bionemo_replicas : 0
 
@@ -32,7 +32,7 @@ resource "kubernetes_deployment" "bionemo_notebook" {
       spec {
 
         image_pull_secrets {
-          name = kubernetes_secret.nvcrio-cred.metadata[0].name
+          name = kubernetes_secret_v1.nvcrio-cred.metadata[0].name
         }
 
         container {
@@ -58,6 +58,14 @@ resource "kubernetes_deployment" "bionemo_notebook" {
 
           resources {
             limits = {
+              cpu              = "16"
+              memory           = "128Gi"
+              "nvidia.com/gpu" = "1"
+            }
+
+            requests = {
+              cpu              = "16"
+              memory           = "128Gi"
               "nvidia.com/gpu" = "1"
             }
           }
@@ -80,7 +88,7 @@ resource "kubernetes_deployment" "bionemo_notebook" {
   }
 }
 
-resource "kubernetes_service" "bionemo_public" {
+resource "kubernetes_service_v1" "bionemo_public" {
 
   count = var.bionemo ? var.bionemo_replicas : 0
 

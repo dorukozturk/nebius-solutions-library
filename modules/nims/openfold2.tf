@@ -1,5 +1,4 @@
-
-resource "kubernetes_deployment" "openfold2" {
+resource "kubernetes_deployment_v1" "openfold2" {
   metadata {
     name      = "openfold2"
     namespace = var.namespace
@@ -27,12 +26,12 @@ resource "kubernetes_deployment" "openfold2" {
       spec {
 
         image_pull_secrets {
-          name = kubernetes_secret.nvcrio-cred.metadata[0].name
+          name = kubernetes_secret_v1.nvcrio-cred.metadata[0].name
         }
 
         container {
 
-          name  = "openfold3"
+          name  = "openfold2"
           image = "nvcr.io/nim/openfold/openfold2:${var.openfold2_version}"
 
           command = ["/bin/bash", "-c", "/opt/nim/start_server.sh"]
@@ -45,7 +44,7 @@ resource "kubernetes_deployment" "openfold2" {
 
             value_from {
               secret_key_ref {
-                name = kubernetes_secret.ngc_api_key.metadata[0].name
+                name = kubernetes_secret_v1.ngc_api_key.metadata[0].name
                 key  = "NGC_API_KEY"
               }
             }
@@ -87,14 +86,14 @@ resource "kubernetes_deployment" "openfold2" {
 
           empty_dir {
             medium     = "Memory"
-            size_limit = "16Gi"
+            size_limit = "64Gi"
           }
         }
         volume {
           name = "mnt-data"
 
           host_path {
-            path = "/home/data/nim"
+            path = "/mnt/data/nim"
             type = "DirectoryOrCreate"
           }
         }

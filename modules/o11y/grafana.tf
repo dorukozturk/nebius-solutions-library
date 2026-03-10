@@ -73,7 +73,7 @@ EOT
 
 locals {
   grafana_access_token_path = "${path.root}/grafana_access_token.txt"
-  grafana_access_token = var.o11y.grafana.enabled && var.k8s_node_group_sa_enabled ? try(trimspace(file(local.grafana_access_token_path)), "") : ""
+  grafana_access_token      = var.o11y.grafana.enabled && var.k8s_node_group_sa_enabled ? try(trimspace(file(local.grafana_access_token_path)), "") : ""
 }
 
 resource "nebius_applications_v1alpha1_k8s_release" "grafana" {
@@ -85,9 +85,12 @@ resource "nebius_applications_v1alpha1_k8s_release" "grafana" {
   namespace        = "o11y"
   product_slug     = "nebius/grafana-solution-by-nebius"
 
-  set = {
-    "grafana.nebius.projectId"   = var.parent_id
-    "grafana.adminPassword"      = random_password.grafana_password[0].result
-    "grafana.nebius.accessToken" = local.grafana_access_token
+  sensitive = {
+    set = {
+      "grafana.nebius.projectId"   = var.parent_id
+      "grafana.adminPassword"      = random_password.grafana_password[0].result
+      "grafana.nebius.accessToken" = local.grafana_access_token
+    }
   }
 }
+

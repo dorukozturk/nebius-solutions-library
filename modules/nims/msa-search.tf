@@ -1,5 +1,4 @@
-
-resource "kubernetes_deployment" "msa_search" {
+resource "kubernetes_deployment_v1" "msa_search" {
   metadata {
     name      = "msa-search"
     namespace = var.namespace
@@ -26,7 +25,7 @@ resource "kubernetes_deployment" "msa_search" {
       spec {
 
         image_pull_secrets {
-          name = kubernetes_secret.nvcrio-cred.metadata[0].name
+          name = kubernetes_secret_v1.nvcrio-cred.metadata[0].name
         }
 
         container {
@@ -47,7 +46,7 @@ resource "kubernetes_deployment" "msa_search" {
 
             value_from {
               secret_key_ref {
-                name = kubernetes_secret.ngc_api_key.metadata[0].name
+                name = kubernetes_secret_v1.ngc_api_key.metadata[0].name
                 key  = "NGC_API_KEY"
               }
             }
@@ -59,15 +58,15 @@ resource "kubernetes_deployment" "msa_search" {
 
           resources {
             limits = {
-              cpu              = "32"
-              memory           = "256Gi"
-              "nvidia.com/gpu" = "2"
+              cpu              = "16"
+              memory           = "128Gi"
+              "nvidia.com/gpu" = "1"
             }
 
             requests = {
-              cpu              = "32"
-              memory           = "256Gi"
-              "nvidia.com/gpu" = "2"
+              cpu              = "16"
+              memory           = "128Gi"
+              "nvidia.com/gpu" = "1"
             }
           }
 

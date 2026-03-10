@@ -51,20 +51,6 @@ variable "slurm_partition_raw_config" {
 
 # endregion PartitionConfiguration
 
-# region WorkerFeatures
-
-variable "slurm_worker_features" {
-  description = "List of features to be enabled on worker nodes."
-  type = list(object({
-    name          = string
-    hostlist_expr = string
-    nodeset_name  = optional(string)
-  }))
-  default = []
-}
-
-# endregion WorkerFeatures
-
 # region HealthCheckConfig
 
 variable "slurm_health_check_config" {
@@ -142,11 +128,6 @@ variable "resources" {
     error_message = "At least one worker node must be provided."
   }
 
-  # Only enforce single worker nodeset when nodesets feature is disabled
-  validation {
-    condition     = var.slurm_nodesets_enabled || length(var.resources.worker) == 1
-    error_message = "Only one worker nodeset is supported when slurm_nodesets_enabled is false."
-  }
 }
 
 resource "terraform_data" "check_worker_nodesets" {
@@ -330,11 +311,12 @@ variable "nfs_node_group_enabled" {
 
 variable "nfs_in_k8s" {
   type = object({
-    enabled        = bool
-    version        = optional(string)
-    size_gibibytes = optional(number)
-    storage_class  = optional(string, "compute-csi-network-ssd-io-m3-ext4")
-    threads        = optional(number)
+    enabled         = bool
+    version         = optional(string)
+    use_stable_repo = optional(bool, true)
+    size_gibibytes  = optional(number)
+    storage_class   = optional(string, "compute-csi-network-ssd-io-m3-ext4")
+    threads         = optional(number)
   })
   default = {
     enabled = false
@@ -752,19 +734,13 @@ variable "active_checks_scope" {
   description = "Scope of active health-checks. Defines what checks should run after the cluster is provisioned."
   default     = ""
   validation {
-    condition     = contains(["dev", "testing", "prod_quick", "prod_acceptance"], var.active_checks_scope)
-    error_message = "active_checks_scope should be one of: dev, testing, prod_quick, prod_acceptance."
+    condition     = contains(["dev", "testing", "prod_quick", "prod_acceptance", "essential"], var.active_checks_scope)
+    error_message = "active_checks_scope should be one of: dev, testing, prod_quick, prod_acceptance, essential."
   }
 }
 # endregion ActiveChecks
 
 # region Nodesets
-
-variable "slurm_nodesets_enabled" {
-  description = "Enable nodesets feature for Slurm cluster. When enabled, creates separate nodesets for each worker configuration."
-  type        = bool
-  default     = false
-}
 
 variable "worker_nodesets" {
   type = list(object({
@@ -776,12 +752,17 @@ variable "worker_nodesets" {
     gres_name        = optional(string)
     gres_config      = list(string)
     create_partition = bool
+    ephemeral_nodes  = optional(bool, false)
   }))
   default = []
 }
 
 variable "slurm_nodesets_partitions" {
-  description = "Partition configuration for nodesets. Used only when slurm_nodesets_enabled is true."
+  description = <<-EOT
+    Partition configuration for nodesets.
+    Users must not remove the "hidden" partition.
+    Users can modify the "main" partition, but should not remove it (there must be at least one default partition).
+  EOT
   type = list(object({
     name         = string
     is_all       = optional(bool, false)
@@ -789,6 +770,45 @@ variable "slurm_nodesets_partitions" {
     config       = string
   }))
   default = []
+
+  validation {
+    condition = (
+      length(var.slurm_nodesets_partitions) == 0 ||
+      anytrue([for p in var.slurm_nodesets_partitions : (p.name == "hidden")])
+    )
+    error_message = "slurm_nodesets_partitions must include a partition named \"hidden\"."
+  }
+
+  validation {
+    condition = (
+      length(var.slurm_nodesets_partitions) == 0 ||
+      length([for p in var.slurm_nodesets_partitions : p if can(regex("Default=YES", p.config))]) == 1
+    )
+    error_message = "Exactly one partition in slurm_nodesets_partitions must have \"Default=YES\" in its config."
+  }
+
+  validation {
+    condition = alltrue([
+      for p in var.slurm_nodesets_partitions :
+      (p.is_all || length(p.nodeset_refs) > 0)
+    ])
+    error_message = "Each partition must have either is_all = true or non-empty nodeset_refs."
+  }
+
+  validation {
+    condition = alltrue([
+      for p in var.slurm_nodesets_partitions :
+      !(p.is_all && length(p.nodeset_refs) > 0)
+    ])
+    error_message = "A partition cannot have both is_all = true and non-empty nodeset_refs."
+  }
+
+  validation {
+    condition = (
+      length(distinct([for p in var.slurm_nodesets_partitions : p.name])) == length(var.slurm_nodesets_partitions)
+    )
+    error_message = "All partition names in slurm_nodesets_partitions must be unique."
+  }
 }
 
 # endregion Nodesets

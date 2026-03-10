@@ -4,6 +4,14 @@ set -euo pipefail
 context="${K8S_CLUSTER_CONTEXT:?context is required}"
 prefix="${K8S_WEBHOOK_PREFIX:?webhook prefix is required}"
 
+if [ -n "${K8S_CLUSTER_ID:-}" ]; then
+  nebius mk8s cluster get-credentials \
+    --context-name "$context" \
+    --external \
+    --force \
+    --id "$K8S_CLUSTER_ID"
+fi
+
 if ! kubectl version --context "$context" >/dev/null 2>&1; then
   echo "Cluster unreachable for context $context; skipping kruise webhook cleanup."
   exit 0

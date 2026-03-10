@@ -9,17 +9,94 @@ resource "helm_release" "gpu-operator" {
   timeout          = 600
 
   set = [
+    # Node Feature Discovery
     {
       name  = "nfd.enabled"
-      value = tostring(var.nfd_enabled)
+      value = var.nfd_enabled
     },
+
+    # GPU Driver
     {
-      name  = "dcgm.enabled"
-      value = "true"
+      name  = "driver.enabled"
+      value = true
     },
     {
       name  = "driver.version"
-      value = tostring(var.driver_version)
-    }
+      value = var.driver_version
+    },
+
+    # RDMA / GPUDirect for InfiniBand
+    {
+      name  = "driver.rdma.enabled"
+      value = var.rdma_enabled
+    },
+    {
+      name  = "driver.rdma.useHostMofed"
+      value = var.rdma_use_host_mofed
+    },
+
+    # DCGM (Data Center GPU Manager)
+    {
+      name  = "dcgm.enabled"
+      value = true
+    },
+
+    # DCGM Exporter for Prometheus metrics
+    {
+      name  = "dcgmExporter.enabled"
+      value = var.dcgm_exporter_enabled
+    },
+    {
+      name  = "dcgmExporter.serviceMonitor.enabled"
+      value = var.dcgm_service_monitor_enabled
+    },
+
+    # GPU Feature Discovery
+    {
+      name  = "gfd.enabled"
+      value = true
+    },
+
+    # Device Plugin
+    {
+      name  = "devicePlugin.enabled"
+      value = true
+    },
+
+    # Container Toolkit
+    {
+      name  = "toolkit.enabled"
+      value = true
+    },
+
+    # MIG Strategy
+    {
+      name  = "mig.strategy"
+      value = var.mig_strategy
+    },
+
+    # MIG Manager
+    {
+      name  = "migManager.enabled"
+      value = var.mig_strategy != "none"
+    },
+
+    # Validator to ensure GPU stack is working
+    {
+      name  = "validator.enabled"
+      value = true
+    },
+
+    # Sandbox workloads support (vGPU)
+    {
+      name  = "sandboxWorkloads.enabled"
+      value = false
+    },
+
+    # GPU Direct Storage (optional)
+    {
+      name  = "gds.enabled"
+      value = var.gds_enabled
+    },
   ]
 }

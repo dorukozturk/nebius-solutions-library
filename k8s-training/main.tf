@@ -48,9 +48,17 @@ resource "nebius_iam_v1_group_membership" "k8s_node_group_sa-admin" {
 # CPU NODE GROUP
 ################
 resource "nebius_mk8s_v1_node_group" "cpu-only" {
-  fixed_node_count = var.cpu_nodes_count
-  parent_id        = nebius_mk8s_v1_cluster.k8s-cluster.id
-  name             = "${var.cluster_name}-ng-cpu"
+
+  autoscaling = var.cpu_nodes_autoscaling.enabled ? {
+    min_node_count = var.cpu_nodes_autoscaling.min_size == null ? var.cpu_nodes_autoscaling.max_size : var.cpu_nodes_autoscaling.min_size
+    max_node_count = var.cpu_nodes_autoscaling.max_size
+  } : null
+
+  fixed_node_count = var.cpu_nodes_autoscaling.enabled ? null : var.cpu_nodes_fixed_count
+
+
+  parent_id = nebius_mk8s_v1_cluster.k8s-cluster.id
+  name      = "${var.cluster_name}-ng-cpu"
   labels = {
     "library-solution" : "k8s-training",
   }
@@ -101,13 +109,20 @@ resource "nebius_mk8s_v1_node_group" "cpu-only" {
   }
 }
 #################
-# GPU nODE GROUPS
+# GPU NODE GROUPS
 #################
 resource "nebius_mk8s_v1_node_group" "gpu" {
-  count            = var.gpu_node_groups
-  fixed_node_count = var.gpu_nodes_count_per_group
-  parent_id        = nebius_mk8s_v1_cluster.k8s-cluster.id
-  name             = "${var.cluster_name}-ng-gpu-${count.index}"
+  count = var.gpu_node_groups
+
+  autoscaling = var.gpu_nodes_autoscaling.enabled ? {
+    min_node_count = var.gpu_nodes_autoscaling.min_size == null ? var.gpu_nodes_autoscaling.max_size : var.gpu_nodes_autoscaling.min_size
+    max_node_count = var.gpu_nodes_autoscaling.max_size
+  } : null
+
+  fixed_node_count = var.gpu_nodes_autoscaling.enabled ? null : var.gpu_nodes_fixed_count_per_group
+
+  parent_id = nebius_mk8s_v1_cluster.k8s-cluster.id
+  name      = "${var.cluster_name}-ng-gpu-${count.index}"
   labels = {
     "library-solution" : "k8s-training",
   }

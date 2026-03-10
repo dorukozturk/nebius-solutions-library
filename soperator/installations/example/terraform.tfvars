@@ -162,6 +162,7 @@ filestore_accounting = {
 nfs_in_k8s = {
   enabled         = true
   version         = "1.2.0"
+  use_stable_repo = true
   size_gibibytes  = 3720
   disk_type       = "NETWORK_SSD_IO_M3"
   filesystem_type = "ext4"
@@ -181,29 +182,30 @@ nfs_in_k8s = {
 
 # Version of soperator.
 # ---
-slurm_operator_version = "2.0.0"
+slurm_operator_version = "3.0.1"
 
 # Is the version of soperator stable or not.
 # ---
 slurm_operator_stable = true
 
-# Enable nodesets feature for Slurm cluster. When enabled, creates separate nodesets for each worker configuration.
+# Each partition must have either is_all = true (includes all nodesets) or nodeset_refs (list of specific nodesets).
+# Users must not remove the "hidden" partition.
+# Users can modify the "main" partition, but should not remove it (there must be at least one default partition).
 # ---
-slurm_nodesets_enabled = true
-
-# Partition configuration for nodesets. Used only when slurm_nodesets_enabled is true.
-# If empty, a default partition "main" with all nodes will be created.
-# ---
-# slurm_nodesets_partitions = [
-#   {
-#     name   = "workers"
-#     is_all = false
-#     config = "Default=NO PriorityTier=10 MaxTime=INFINITE State=UP OverSubscribe=YES"
-#     nodeset_refs = [
-#       "worker",
-#     ]
-#   },
-# ]
+slurm_nodesets_partitions = [
+  {
+    name         = "main"
+    is_all       = true
+    nodeset_refs = [] # e.g. ["worker"], but is_all must be false in this case
+    config       = "Default=YES PriorityTier=10 MaxTime=INFINITE State=UP OverSubscribe=YES"
+  },
+  {
+    name         = "hidden"
+    is_all       = true
+    nodeset_refs = []
+    config       = "Default=NO PriorityTier=10 PreemptMode=OFF Hidden=YES MaxTime=INFINITE State=UP OverSubscribe=YES"
+  },
+]
 
 # Type of the Slurm partition config. Could be either `default` or `custom`.
 # By default, "default".
@@ -231,18 +233,6 @@ slurm_partition_config_type = "default"
 #   This nodeset may be used in conjunction with partitions.
 #   It is required if `Nodes=<nodeset_name>` is used for a partition.
 #
-# slurm_worker_features = [
-#   {
-#     name = "low_priority"
-#     hostlist_expr = "worker-[0-0]"
-#     nodeset_name = "low_priority"
-#   },
-#   {
-#     name = "low_priority"
-#     hostlist_expr = "worker-1"
-#     nodeset_name = "high_priority"
-#   }
-# ]
 
 # Health check config:
 # - health_check_interval: (Required) Interval for health check run in seconds.
@@ -293,11 +283,11 @@ slurm_nodeset_controller = {
   size = 1
   resource = {
     platform = "cpu-d3"
-    preset   = "4vcpu-16gb"
+    preset   = "16vcpu-64gb"
   }
   boot_disk = {
     type                 = "NETWORK_SSD"
-    size_gibibytes       = 128
+    size_gibibytes       = 256
     block_size_kibibytes = 4
   }
 }
@@ -343,6 +333,10 @@ slurm_nodeset_workers = [
     features = null
     # Set to `true` to create partition for the NodeSet by default
     create_partition = null
+    # Whether to enable ephemeral nodes behavior for this worker nodeset.
+    # When true, nodes will use dynamic topology injection and power management.
+    # By default, false.
+    ephemeral_nodes = false
   },
 ]
 
@@ -447,6 +441,7 @@ slurm_exporter_enabled = true
 # - "prod_quick" - run all health-checks except those that take long. Takes additional 10 minutes (H100) - 30 minutes (B300).
 # - "testing" - to be used for Soperator E2E tests.
 # - "dev" - to be used for Soperator development clusters.
+# - "essential" - skip most of checks and run only essential ones. Don't use in production.
 # ---
 active_checks_scope = ""
 

@@ -432,6 +432,7 @@ variable "nfs_in_k8s" {
   type = object({
     enabled         = bool
     version         = optional(string)
+    use_stable_repo = optional(bool, true)
     size_gibibytes  = optional(number)
     disk_type       = optional(string)
     filesystem_type = optional(string)
@@ -551,14 +552,11 @@ variable "slurm_operator_stable" {
   default     = true
 }
 
-variable "slurm_nodesets_enabled" {
-  description = "Enable nodesets feature for Slurm cluster. When enabled, creates separate nodesets for each worker configuration."
-  type        = bool
-  default     = false
-}
-
 variable "slurm_nodesets_partitions" {
-  description = "Partition configuration for nodesets. Used only when slurm_nodesets_enabled is true."
+  description = <<-EOT
+    Users must not remove the "hidden" partition.
+    Users can modify the "main" partition, but should not remove it (there must be at least one default partition).
+  EOT
   type = list(object({
     name         = string
     is_all       = optional(bool, false)
@@ -599,20 +597,6 @@ variable "slurm_partition_raw_config" {
 }
 
 # endregion PartitionConfiguration
-
-# region WorkerFeatures
-
-variable "slurm_worker_features" {
-  description = "List of features to be enabled on worker nodes."
-  type = list(object({
-    name          = string
-    hostlist_expr = string
-    nodeset_name  = optional(string)
-  }))
-  default = []
-}
-
-# endregion WorkerFeatures
 
 # region HealthCheckConfig
 
@@ -737,6 +721,7 @@ variable "slurm_nodeset_workers" {
     }))
     features         = optional(list(string))
     create_partition = optional(bool)
+    ephemeral_nodes  = optional(bool, false)
   }))
   nullable = false
   default = [{
@@ -1180,8 +1165,8 @@ variable "active_checks_scope" {
   description = "Scope of active checks. Defines what active checks should be checked during cluster bootstrap."
   default     = ""
   validation {
-    condition     = contains(["dev", "testing", "prod_quick", "prod_acceptance"], var.active_checks_scope)
-    error_message = "active_checks_scope should be one of: dev, testing, prod_quick, prod_acceptance."
+    condition     = contains(["dev", "testing", "prod_quick", "prod_acceptance", "essential"], var.active_checks_scope)
+    error_message = "active_checks_scope should be one of: dev, testing, prod_quick, prod_acceptance, essential."
   }
 }
 

@@ -7,7 +7,9 @@ resource "nebius_applications_v1alpha1_k8s_release" "nebius-observability-agent"
   namespace        = "o11y"
   product_slug     = "nebius/nebius-observability-agent"
 
-  set = {
-    "config.metrics.collectK8sClusterMetrics" : var.o11y.nebius_o11y_agent.collectK8sClusterMetrics,
+  sensitive = {
+    set = {
+      "config.metrics.collectK8sClusterMetrics" = var.o11y.nebius_o11y_agent.collectK8sClusterMetrics
+    }
   }
 }
