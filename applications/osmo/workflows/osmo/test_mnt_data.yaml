@@ -1,0 +1,64 @@
+# /mnt/data Filestore Test Workflow
+# Validates that the Nebius Filestore is mounted at /mnt/data and measures I/O speed.
+# Uses the H100 platform (with shm template).
+#
+# Submit with:
+#   osmo workflow submit workflows/osmo/test_mnt_data.yaml
+
+workflow:
+  name: test-mnt-data
+  resources:
+    gpu-resource:
+      platform: gpu
+      gpu: 1
+      cpu: 4
+      memory: 4Gi
+      storage: 1Gi
+  tasks:
+  - name: check-mnt-data
+    image: ubuntu:24.04
+    command: ["bash", "-c"]
+    args:
+    - |
+      echo "=== /mnt/data Filestore Test ==="
+      echo ""
+
+      # Check mount
+      echo "--- Mount check ---"
+      if mountpoint -q /mnt/data 2>/dev/null || df /mnt/data 2>/dev/null | grep -q /mnt/data; then
+        echo "PASS: /mnt/data is mounted"
+      else
+        echo "FAIL: /mnt/data is NOT mounted"
+        exit 1
+      fi
+      echo ""
+
+      echo "--- Filesystem info ---"
+      df -hT /mnt/data
+      echo ""
+
+      echo "--- Mount type ---"
+      mount | grep /mnt/data || echo "(not visible in mount table -- may be host mount)"
+      echo ""
+
+      # Write test
+      echo "--- Write test (256MB) ---"
+      TEST_DIR="/mnt/data/.osmo-bench-$$"
+      mkdir -p "${TEST_DIR}"
+      WRITE_OUT=$(dd if=/dev/zero of="${TEST_DIR}/bench.tmp" bs=1M count=256 conv=fdatasync 2>&1)
+      echo "$WRITE_OUT"
+      echo ""
+
+      # Read test
+      echo "--- Read test (256MB) ---"
+      READ_OUT=$(dd if="${TEST_DIR}/bench.tmp" of=/dev/null bs=1M 2>&1)
+      echo "$READ_OUT"
+      echo ""
+
+      # Cleanup
+      rm -rf "${TEST_DIR}"
+
+      echo "=== /mnt/data Filestore Test Complete ==="
+    resource: gpu-resource
+    volumeMounts:
+    - /mnt/data
