@@ -41,18 +41,42 @@ workflow:
       mount | grep /mnt/data || echo "(not visible in mount table -- may be host mount)"
       echo ""
 
-      # Write test
-      echo "--- Write test (256MB) ---"
-      TEST_DIR="/mnt/data/.osmo-bench-$$"
-      mkdir -p "${TEST_DIR}"
-      WRITE_OUT=$(dd if=/dev/zero of="${TEST_DIR}/bench.tmp" bs=1M count=256 conv=fdatasync 2>&1)
-      echo "$WRITE_OUT"
+      # Install fio
+      apt-get update -qq && apt-get install -y -qq fio > /dev/null 2>&1
+      echo "fio version: $(fio --version)"
       echo ""
 
-      # Read test
-      echo "--- Read test (256MB) ---"
-      READ_OUT=$(dd if="${TEST_DIR}/bench.tmp" of=/dev/null bs=1M 2>&1)
-      echo "$READ_OUT"
+      TEST_DIR="/mnt/data/.osmo-bench-$$"
+      mkdir -p "${TEST_DIR}"
+
+      # Sequential write test
+      echo "--- Sequential Write (direct I/O, 1M blocks, 8 jobs) ---"
+      fio --name=seq-write \
+        --ioengine=libaio --direct=1 --time_based \
+        --directory="${TEST_DIR}" \
+        --rw=write --bs=1M --iodepth=32 \
+        --thread --numjobs=8 --size=2G --runtime=30 \
+        --group_reporting
+      echo ""
+
+      # Sequential read test
+      echo "--- Sequential Read (direct I/O, 1M blocks, 8 jobs) ---"
+      fio --name=seq-read \
+        --ioengine=libaio --direct=1 --time_based \
+        --directory="${TEST_DIR}" \
+        --rw=read --bs=1M --iodepth=32 \
+        --thread --numjobs=8 --size=2G --runtime=30 \
+        --group_reporting
+      echo ""
+
+      # Random read/write (4K) for IOPS
+      echo "--- Random Read/Write 4K (IOPS test, 4 jobs) ---"
+      fio --name=rand-rw \
+        --ioengine=libaio --direct=1 --time_based \
+        --directory="${TEST_DIR}" \
+        --rw=randrw --rwmixread=70 --bs=4k --iodepth=32 \
+        --thread --numjobs=4 --size=1G --runtime=30 \
+        --group_reporting
       echo ""
 
       # Cleanup
