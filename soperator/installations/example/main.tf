@@ -38,17 +38,22 @@ locals {
   # V2 node_group_workers for new-style deployments (with nodesets)
   node_group_workers_v2 = flatten([for i, nodeset in var.slurm_nodeset_workers : [
     for subset in range(ceil(nodeset.size / 100.0)) : {
-      name          = nodeset.name
-      size          = min(100, nodeset.size - subset * 100)
-      min_size      = 0
-      max_size      = max(1, min(100, nodeset.size - subset * 100))
-      autoscaling   = true
-      resource      = nodeset.resource
-      boot_disk     = nodeset.boot_disk
-      gpu_cluster   = nodeset.gpu_cluster
-      nodeset_index = i
-      subset_index  = subset
-      preemptible   = nodeset.preemptible
+      name = nodeset.name
+      size = min(100, nodeset.size - subset * 100)
+      min_size = (
+        nodeset.autoscaling.enabled && nodeset.autoscaling.min_size != null
+        ? min(100, max(0, nodeset.autoscaling.min_size - subset * 100)) # fill-first distribution
+        : min(100, nodeset.size - subset * 100)                         # min=max
+      )
+      max_size           = max(1, min(100, nodeset.size - subset * 100))
+      autoscaling        = nodeset.autoscaling.enabled
+      resource           = nodeset.resource
+      boot_disk          = nodeset.boot_disk
+      gpu_cluster        = nodeset.gpu_cluster
+      nodeset_index      = i
+      subset_index       = subset
+      preemptible        = nodeset.preemptible
+      reservation_policy = nodeset.reservation_policy
     }
   ]])
 }
@@ -184,6 +189,7 @@ module "k8s" {
   k8s_version                  = var.k8s_version
   name                         = local.k8s_cluster_name
   company_name                 = var.company_name
+  platform_driver_presets      = var.platform_driver_presets
   use_preinstalled_gpu_drivers = var.use_preinstalled_gpu_drivers
 
   etcd_cluster_size = var.etcd_cluster_size
@@ -313,7 +319,7 @@ module "slurm" {
   maintenance_ignore_node_groups = var.maintenance_ignore_node_groups
 
   use_preinstalled_gpu_drivers  = var.use_preinstalled_gpu_drivers
-  cuda_major_version            = var.slurm_nodeset_workers[0].resource.platform == "gpu-b300-sxm" ? 13 : 12
+  cuda_version                  = lookup(var.platform_cuda_versions, var.slurm_nodeset_workers[0].resource.platform)
   controller_state_on_filestore = var.controller_state_on_filestore
 
   node_count = {
@@ -472,6 +478,7 @@ module "slurm" {
     )
     cpu_topology     = module.resources.cpu_topology_by_platform[nodeset.resource.platform][nodeset.resource.preset]
     gres_name        = lookup(module.resources.gres_name_by_platform, nodeset.resource.platform, null)
+    gres_config      = lookup(module.resources.gres_config_by_platform, nodeset.resource.platform, null)
     create_partition = nodeset.create_partition != null ? nodeset.create_partition : false
   }]
 

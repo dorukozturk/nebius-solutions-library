@@ -124,8 +124,10 @@ resource "nebius_mk8s_v1_node_group" "worker_v2" {
 
     preemptible = var.node_group_workers_v2[count.index].preemptible
 
+    reservation_policy = var.node_group_workers_v2[count.index].reservation_policy
+
     gpu_settings = (var.use_preinstalled_gpu_drivers && local.node_group_gpu_present_v2.worker[count.index]) ? {
-      drivers_preset = module.resources.driver_preset_by_platform[var.node_group_workers_v2[count.index].resource.platform]
+      drivers_preset = lookup(var.platform_driver_presets, var.node_group_workers_v2[count.index].resource.platform)
     } : null
 
     boot_disk = {

@@ -16,6 +16,7 @@ resource "terraform_data" "wait_for_slurm_cluster_hr" {
 resource "terraform_data" "wait_for_soperator_activechecks_hr" {
   depends_on = [
     helm_release.soperator_fluxcd_bootstrap,
+    terraform_data.wait_for_slurm_cluster_hr,
   ]
 
   provisioner "local-exec" {
@@ -134,7 +135,7 @@ resource "helm_release" "soperator_fluxcd_cm" {
       }
 
       use_preinstalled_gpu_drivers = var.use_preinstalled_gpu_drivers
-      cuda_major_version           = var.cuda_major_version
+      cuda_version                 = var.cuda_version
 
       slurm_worker_features     = var.slurm_worker_features
       slurm_health_check_config = var.slurm_health_check_config

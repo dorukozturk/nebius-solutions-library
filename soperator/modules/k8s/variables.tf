@@ -46,6 +46,13 @@ variable "company_name" {
 
 #---
 
+variable "platform_driver_presets" {
+  description = "Per-platform presets for GPU driver. Keys are platform IDs (e.g., gpu-h100-sxm); values are driver presets (e.g., cuda13.0)."
+  type        = map(string)
+}
+
+#---
+
 variable "node_group_system" {
   description = "System node group specification."
   type = object({
@@ -143,7 +150,11 @@ variable "node_group_workers_v2" {
     gpu_cluster = optional(object({
       infiniband_fabric = string
     }))
-    preemptible   = optional(object({}))
+    preemptible = optional(object({}))
+    reservation_policy = optional(object({
+      policy          = optional(string)
+      reservation_ids = optional(list(string))
+    }))
     nodeset_index = number
     subset_index  = number
   }))

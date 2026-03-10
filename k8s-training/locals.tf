@@ -95,7 +95,18 @@ locals {
     "gpu-b300-sxm-1gpu-24vcpu-346gb"   = "1xB300"
 
     # L40 configurations
-    # TODO add support for L400
+    "gpu-l40s-d-1gpu-16vcpu-96gb" = "1xL40S"
+    "gpu-l40s-d-1gpu-32vcpu-192gb" =  "1xL40S"
+    "gpu-l40s-d-1gpu-48vcpu-288gb" =  "1xL40S"
+    "gpu-l40s-d-2gpu-64vcpu-384gb" =  "2xL40S"
+    "gpu-l40s-d-2gpu-64vcpu-384gb" =  "2xL40S"
+    "gpu-l40s-d-2gpu-96vcpu-576gb" =  "2xL40S"
+    "gpu-l40s-d-4gpu-128vcpu-768gb" =  "4xL40S"
+    "gpu-l40s-d-4gpu-192vcpu-1152gb" =  "4xL40S"
+    "gpu-l40s-a-1gpu-8vcpu-32gb" = "1XL40S"
+    "gpu-l40s-a-1gpu-24vcpu-96gb" = "1X40S"
+    "gpu-l40s-a-1gpu-32vcpu-128gb" = "1X40S"
+    "gpu-l40s-a-1gpu-40vcpu-160gb" = "1X40S"
   }
 
   # Create the key for hardware profile lookup

@@ -39,6 +39,12 @@ nodesets:
             resources[i].gpus > 0 ? format("Gres=gpu:%s:%d", nodeset.gres_name, resources[i].gpus) : "",
           ]))}"
           dynamic: "${extra}"
+          %{~ if nodeset.gres_config != null && length(nodeset.gres_config) > 0 ~}
+          gresConfig:
+            %{~ for gres_line in nodeset.gres_config ~}
+            - ${gres_line}
+            %{~ endfor ~}
+          %{~ endif ~}
 
         slurmd:
           resources:

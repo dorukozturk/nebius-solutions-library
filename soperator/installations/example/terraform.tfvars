@@ -311,6 +311,15 @@ slurm_nodeset_workers = [
   {
     name = "worker"
     size = 128
+    # Autoscaling configuration. Set enabled = false to use fixed node count instead.
+    autoscaling = {
+      enabled = true
+      # min_size options:
+      # - null: min=max, no scale-down (default, recommended - saves ~10 min on initial provisioning)
+      #   it can be changed to a number later if needed.
+      # - N: can scale down to N nodes
+      min_size = null
+    }
     resource = {
       platform = "gpu-h100-sxm"
       preset   = "8gpu-128vcpu-1600gb"
@@ -325,12 +334,23 @@ slurm_nodeset_workers = [
     }
     # Change to preemptible = {} in case you want to use preemptible nodes
     preemptible = null
+    # Use reservation_policy to leverage compute reservations (capacity blocks)
+    # reservation_policy = {
+    #   policy          = "AUTO"  # AUTO, FORBID, or STRICT
+    #   reservation_ids = ["capacityblockgroup-xYYzzzzzz"]
+    # }
     # Provide a list of strings to set Slurm Node features
     features = null
     # Set to `true` to create partition for the NodeSet by default
     create_partition = null
   },
 ]
+
+# Per-platform CUDA versions consumed by Slurm/operator (e.g., 12.8.2). Keys are platform IDs (e.g., gpu-h100-sxm).
+#platform_cuda_versions = {}
+
+# Per-platform GPU driver presets. Keys are platform IDs (e.g., gpu-h100-sxm); values are driver presets (e.g., cuda13.0).
+#platform_driver_presets = {}
 
 # Driverfull mode is used to run Slurm jobs with GPU drivers installed on the worker nodes.
 use_preinstalled_gpu_drivers = true
@@ -571,6 +591,8 @@ k8s_version = 1.32
 # ---
 nvidia_admin_conf_lines = [
   "options nvidia NVreg_RestrictProfilingToAdminUsers=0", # Allow access to GPU counters in nsys profiler for non-root users
+  "options nvidia NVreg_EnableStreamMemOPs=1",
+  "options nvidia NVreg_RegistryDwords=\"PeerMappingOverride=1;\"",
 ]
 
 # endregion k8s
