@@ -56,16 +56,17 @@ else
 
     kubectl create namespace "${GPU_OPERATOR_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
 
-    DRIVER_VERSION_ARGS=()
+    DRIVER_VERSION_SET=()
     if [[ -n "${GPU_DRIVER_VERSION:-}" ]]; then
         log_info "Using pinned driver version: ${GPU_DRIVER_VERSION}"
-        DRIVER_VERSION_ARGS=(--set "driver.version=${GPU_DRIVER_VERSION}")
+        DRIVER_VERSION_SET=(--set "driver.version=${GPU_DRIVER_VERSION}")
     fi
 
+    # shellcheck disable=SC2086
     helm upgrade --install gpu-operator nvidia/gpu-operator \
         --namespace "${GPU_OPERATOR_NAMESPACE}" \
         --values "${VALUES_DIR}/gpu-operator.yaml" \
-        "${DRIVER_VERSION_ARGS[@]+"${DRIVER_VERSION_ARGS[@]}"}" \
+        ${DRIVER_VERSION_SET[@]:+${DRIVER_VERSION_SET[@]}} \
         --timeout 10m
 
     log_success "GPU Operator deployed (pods will become ready when GPU nodes are available)"

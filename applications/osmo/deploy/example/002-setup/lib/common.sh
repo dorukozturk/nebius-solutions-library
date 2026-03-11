@@ -138,19 +138,35 @@ wait_for_condition() {
     return 1
 }
 
-# Check kubectl connection
+# Check kubectl connection and verify we're targeting the correct cluster
 check_kubectl() {
     if ! check_command kubectl; then
         log_error "kubectl not found"
         return 1
     fi
-    
+
     if ! kubectl cluster-info &>/dev/null; then
         log_error "Cannot connect to Kubernetes cluster"
         return 1
     fi
-    
-    log_success "kubectl connected to cluster"
+
+    # Verify current context matches the expected cluster from Terraform
+    local expected_cluster
+    expected_cluster=$(get_tf_output "cluster_name" "../001-iac" 2>/dev/null || true)
+    if [[ -n "$expected_cluster" ]]; then
+        local current_context
+        current_context=$(kubectl config current-context 2>/dev/null || true)
+        if [[ -n "$current_context" && "$current_context" != *"$expected_cluster"* ]]; then
+            log_error "Wrong Kubernetes context!"
+            log_error "  Current context: $current_context"
+            log_error "  Expected cluster: $expected_cluster"
+            log_info "Switch context with: nebius mk8s cluster get-credentials --id \$(terraform -chdir=../001-iac output -raw cluster_id) --external"
+            return 1
+        fi
+        log_success "kubectl connected to cluster ($expected_cluster)"
+    else
+        log_success "kubectl connected to cluster"
+    fi
     return 0
 }
 
