@@ -367,42 +367,6 @@ variable "container_registry_name" {
 }
 
 # =============================================================================
-# MysteryBox Secrets Configuration (REQUIRED for Managed PostgreSQL)
-# =============================================================================
-# These variables MUST be set when using Managed PostgreSQL.
-# Secrets are stored in MysteryBox, keeping them OUT of Terraform state.
-#
-# REQUIRED Setup (before terraform apply):
-#   1. cd deploy/000-prerequisites
-#   2. source ./secrets-init.sh
-#   3. This sets TF_VAR_postgresql_mysterybox_secret_id automatically
-#
-# If you see validation errors, you forgot to run secrets-init.sh!
-# =============================================================================
-
-variable "postgresql_mysterybox_secret_id" {
-  description = "MysteryBox secret ID for PostgreSQL password (REQUIRED - set by secrets-init.sh)"
-  type        = string
-  default     = null
-
-  validation {
-    condition     = var.postgresql_mysterybox_secret_id == null || can(regex("^mbsec-", var.postgresql_mysterybox_secret_id))
-    error_message = "PostgreSQL MysteryBox secret ID must start with 'mbsec-' (e.g., mbsec-e00xxx). Run: source ./secrets-init.sh"
-  }
-}
-
-variable "mek_mysterybox_secret_id" {
-  description = "MysteryBox secret ID for OSMO MEK (Master Encryption Key)"
-  type        = string
-  default     = null
-
-  validation {
-    condition     = var.mek_mysterybox_secret_id == null || can(regex("^mbsec-", var.mek_mysterybox_secret_id))
-    error_message = "MEK MysteryBox secret ID must start with 'mbsec-' (e.g., mbsec-e00xxx). Run: source ./secrets-init.sh"
-  }
-}
-
-# =============================================================================
 # WireGuard VPN Configuration
 # =============================================================================
 

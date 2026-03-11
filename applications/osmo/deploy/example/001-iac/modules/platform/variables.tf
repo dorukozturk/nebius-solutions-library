@@ -158,43 +158,6 @@ variable "postgresql_username" {
 }
 
 # -----------------------------------------------------------------------------
-# MysteryBox Secret IDs (REQUIRED for Managed PostgreSQL)
-# -----------------------------------------------------------------------------
-# MysteryBox secret ID is REQUIRED when using Managed PostgreSQL.
-# This ensures passwords are NEVER stored in Terraform state.
-#
-# REQUIRED setup (before terraform apply):
-#   1. cd deploy/000-prerequisites
-#   2. source ./secrets-init.sh
-#   3. cd ../001-iac && terraform apply
-#
-# The script sets TF_VAR_postgresql_mysterybox_secret_id automatically.
-# If you forget, Terraform will fail with a clear error message.
-# -----------------------------------------------------------------------------
-
-variable "postgresql_mysterybox_secret_id" {
-  description = "MysteryBox secret ID for PostgreSQL password (REQUIRED when enable_managed_postgresql=true)"
-  type        = string
-  default     = null
-
-  validation {
-    condition     = var.postgresql_mysterybox_secret_id == null || can(regex("^mbsec-", var.postgresql_mysterybox_secret_id))
-    error_message = "PostgreSQL MysteryBox secret ID must start with 'mbsec-'. Run: source ./secrets-init.sh"
-  }
-}
-
-variable "mek_mysterybox_secret_id" {
-  description = "MysteryBox secret ID for MEK (Master Encryption Key)"
-  type        = string
-  default     = null
-
-  validation {
-    condition     = var.mek_mysterybox_secret_id == null || can(regex("^mbsec-", var.mek_mysterybox_secret_id))
-    error_message = "MEK MysteryBox secret ID must start with 'mbsec-'. Run: source ./secrets-init.sh"
-  }
-}
-
-# -----------------------------------------------------------------------------
 # Container Registry Configuration
 # Reference: https://docs.nebius.com/terraform-provider/reference/resources/registry_v1_registry
 # -----------------------------------------------------------------------------

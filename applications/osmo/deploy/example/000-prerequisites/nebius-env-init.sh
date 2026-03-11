@@ -258,10 +258,9 @@ main() {
     echo "    Subnet:  $subnet_name ($subnet_id)"
     echo ""
     echo "Next steps:"
-    echo "  1. source ./secrets-init.sh           # Initialize MysteryBox secrets (recommended)"
-    echo "  2. cd ../001-iac"
-    echo "  3. cp terraform.tfvars.cost-optimized-secure.example terraform.tfvars"
-    echo "  4. terraform init && terraform apply"
+    echo "  1. cd ../001-iac"
+    echo "  2. cp terraform.tfvars.cost-optimized-secure.example terraform.tfvars"
+    echo "  3. terraform init && terraform apply"
     echo ""
 
     return 0

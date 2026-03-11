@@ -107,13 +107,13 @@ output "postgresql_password" {
 }
 
 output "postgresql_mysterybox_secret_id" {
-  description = "MysteryBox secret ID for PostgreSQL password (if configured)"
-  value       = var.postgresql_mysterybox_secret_id
+  description = "MysteryBox secret ID for PostgreSQL password"
+  value       = var.enable_managed_postgresql ? nebius_mysterybox_v1_secret.postgresql_password[0].id : null
 }
 
 output "mek_mysterybox_secret_id" {
-  description = "MysteryBox secret ID for MEK (if configured)"
-  value       = var.mek_mysterybox_secret_id
+  description = "MysteryBox secret ID for MEK"
+  value       = nebius_mysterybox_v1_secret.mek.id
 }
 
 # -----------------------------------------------------------------------------

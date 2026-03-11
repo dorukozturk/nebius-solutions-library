@@ -41,10 +41,6 @@ module "platform" {
   # Container Registry
   enable_container_registry = var.enable_container_registry
   container_registry_name   = var.container_registry_name
-
-  # MysteryBox secrets (optional - more secure, keeps secrets out of TF state)
-  postgresql_mysterybox_secret_id = var.postgresql_mysterybox_secret_id
-  mek_mysterybox_secret_id        = var.mek_mysterybox_secret_id
 }
 
 # -----------------------------------------------------------------------------
