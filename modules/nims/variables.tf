@@ -7,6 +7,7 @@ variable "parent_id" {
 variable "ngc_key" {
   description = "API key from Nvidia GPU cloud: catalog.ngc.nvidia.com"
   type        = string
+  default     = ""
 }
 
 variable "openfold3" {

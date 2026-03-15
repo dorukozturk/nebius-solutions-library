@@ -1,0 +1,37 @@
+# OSMO Backend Operator Values
+# https://nvidia.github.io/OSMO/main/deployment_guide/install_backend/deploy_backend.html
+
+global:
+  # REQUIRED: OSMO image tag (e.g., 6.0.0)
+  osmoImageTag: "6.0.0"
+  
+  # REQUIRED: Your OSMO service URL
+  serviceUrl: "https://osmo.example.com"
+  
+  # Namespaces
+  agentNamespace: "osmo-operator"
+  backendNamespace: "osmo-workflows"
+  
+  # REQUIRED: Unique name for this backend
+  backendName: "nebius-backend"
+  
+  # Authentication
+  accountTokenSecret: "osmo-operator-token"
+  loginMethod: "token"
+
+  # Resource configuration
+  services:
+    backendListener:
+      resources:
+        requests:
+          cpu: "1"
+          memory: "1Gi"
+        limits:
+          memory: "1Gi"
+    backendWorker:
+      resources:
+        requests:
+          cpu: "1"
+          memory: "1Gi"
+        limits:
+          memory: "1Gi"

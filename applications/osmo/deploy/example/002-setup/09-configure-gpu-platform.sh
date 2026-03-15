@@ -1,0 +1,210 @@
+#!/bin/bash
+# Configure OSMO GPU platform with tolerations via pod templates
+# Based on OSMO documentation: https://nvidia.github.io/OSMO/main/deployment_guide/install_backend/resource_pools.html
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+source "${SCRIPT_DIR}/lib/common.sh"
+source "${SCRIPT_DIR}/defaults.sh"
+
+OSMO_URL="${OSMO_URL:-http://localhost:8080}"
+OSMO_NAMESPACE="${OSMO_NAMESPACE:-osmo}"
+
+# Require NEBIUS_REGION (set by nebius-env-init.sh)
+if [[ -z "${NEBIUS_REGION:-}" ]]; then
+    echo "ERROR: NEBIUS_REGION is not set. Run 'source ../000-prerequisites/nebius-env-init.sh' first."
+    exit 1
+fi
+
+# -----------------------------------------------------------------------------
+# Determine GPU platform name
+# -----------------------------------------------------------------------------
+# Try to read the GPU platform from Terraform output and derive a friendly name.
+# Maps: gpu-h100-sxm -> H100, gpu-h200-sxm -> H200, gpu-b200-sxm-a -> B200, etc.
+# Falls back to user input if Terraform is unavailable.
+if [[ -z "${GPU_PLATFORM_NAME:-}" ]]; then
+    TF_GPU_PLATFORM=$(get_tf_output "gpu_nodes_platform" "../001-iac" 2>/dev/null || echo "")
+    if [[ -n "$TF_GPU_PLATFORM" ]]; then
+        # Extract friendly name: gpu-h100-sxm -> H100, gpu-b200-sxm-a -> B200, gpu-l40s-a -> L40S
+        GPU_PLATFORM_NAME=$(echo "$TF_GPU_PLATFORM" | sed -E 's/^gpu-([a-zA-Z0-9]+).*/\1/' | tr '[:lower:]' '[:upper:]')
+        log_info "Auto-detected GPU platform from Terraform: ${TF_GPU_PLATFORM} -> ${GPU_PLATFORM_NAME}"
+    else
+        echo ""
+        echo "Could not auto-detect GPU platform from Terraform."
+        read -r -p "Enter GPU platform name (e.g. H100, H200, B200, L40S): " GPU_PLATFORM_NAME
+        if [[ -z "$GPU_PLATFORM_NAME" ]]; then
+            log_error "GPU platform name is required."
+            exit 1
+        fi
+    fi
+fi
+
+echo ""
+echo "========================================"
+echo "  OSMO GPU Platform Configuration"
+echo "  Platform name: ${GPU_PLATFORM_NAME}"
+echo "========================================"
+echo ""
+
+# Check prerequisites
+check_kubectl || exit 1
+
+# -----------------------------------------------------------------------------
+# Start port-forward
+# -----------------------------------------------------------------------------
+log_info "Starting port-forward to OSMO service..."
+
+start_osmo_port_forward "${OSMO_NAMESPACE}" 8080
+
+cleanup_port_forward() {
+    if [[ -n "${PORT_FORWARD_PID:-}" ]]; then
+        kill $PORT_FORWARD_PID 2>/dev/null || true
+        wait $PORT_FORWARD_PID 2>/dev/null || true
+    fi
+}
+trap cleanup_port_forward EXIT
+
+# Wait for port-forward to be ready
+log_info "Waiting for port-forward to be ready..."
+max_wait=30
+elapsed=0
+while ! curl -s -o /dev/null -w "%{http_code}" "${OSMO_URL}/api/version" 2>/dev/null | grep -q "200\|401\|403"; do
+    sleep 1
+    ((elapsed += 1))
+    if [[ $elapsed -ge $max_wait ]]; then
+        log_error "Port-forward failed to start within ${max_wait}s"
+        exit 1
+    fi
+done
+log_success "Port-forward ready"
+
+# -----------------------------------------------------------------------------
+# Step 1: Fix default_user pod template (remove GPU resources)
+# -----------------------------------------------------------------------------
+# The built-in default_user template includes nvidia.com/gpu which causes ALL
+# workflows (including CPU-only) to request the nvidia RuntimeClass. This fails
+# on CPU nodes. We move GPU resources to the gpu_tolerations template instead.
+log_info "Updating default_user pod template (removing GPU resources)..."
+
+RESPONSE=$(osmo_curl PUT "${OSMO_URL}/api/configs/pod_template/default_user" \
+  -w "\n%{http_code}" \
+  -d @"${SCRIPT_DIR}/default_user_pod_template.json")
+HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+BODY=$(echo "$RESPONSE" | sed '$d')
+
+if [[ "$HTTP_CODE" -ge 200 && "$HTTP_CODE" -lt 300 ]]; then
+    log_success "default_user pod template updated (HTTP ${HTTP_CODE})"
+else
+    log_error "Failed to update default_user pod template (HTTP ${HTTP_CODE})"
+    echo "Response: ${BODY}"
+    exit 1
+fi
+
+# -----------------------------------------------------------------------------
+# Step 2: Create GPU pod template
+# -----------------------------------------------------------------------------
+log_info "Creating gpu_tolerations pod template..."
+
+# Substitute {{NEBIUS_REGION}} placeholder in the template
+GPU_POD_TEMPLATE_RESOLVED="/tmp/gpu_pod_template_resolved.json"
+sed "s/{{NEBIUS_REGION}}/${NEBIUS_REGION}/g" "${SCRIPT_DIR}/gpu_pod_template.json" > "${GPU_POD_TEMPLATE_RESOLVED}"
+
+RESPONSE=$(osmo_curl PUT "${OSMO_URL}/api/configs/pod_template/gpu_tolerations" \
+  -w "\n%{http_code}" \
+  -d @"${GPU_POD_TEMPLATE_RESOLVED}")
+rm -f "${GPU_POD_TEMPLATE_RESOLVED}"
+HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+BODY=$(echo "$RESPONSE" | sed '$d')
+
+if [[ "$HTTP_CODE" -ge 200 && "$HTTP_CODE" -lt 300 ]]; then
+    log_success "Pod template created (HTTP ${HTTP_CODE})"
+else
+    log_error "Failed to create pod template (HTTP ${HTTP_CODE})"
+    echo "Response: ${BODY}"
+    exit 1
+fi
+
+# -----------------------------------------------------------------------------
+# Step 2b: Create shared memory pod template
+# -----------------------------------------------------------------------------
+log_info "Creating shm pod template (shared memory for vLLM, PyTorch, etc.)..."
+
+RESPONSE=$(osmo_curl PUT "${OSMO_URL}/api/configs/pod_template/shm" \
+  -w "\n%{http_code}" \
+  -d @"${SCRIPT_DIR}/shm_pod_template.json")
+HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+BODY=$(echo "$RESPONSE" | sed '$d')
+
+if [[ "$HTTP_CODE" -ge 200 && "$HTTP_CODE" -lt 300 ]]; then
+    log_success "Shared memory pod template created (HTTP ${HTTP_CODE})"
+else
+    log_error "Failed to create shm pod template (HTTP ${HTTP_CODE})"
+    echo "Response: ${BODY}"
+    exit 1
+fi
+
+# -----------------------------------------------------------------------------
+# Step 3: Create GPU platform
+# -----------------------------------------------------------------------------
+log_info "Creating platform '${GPU_PLATFORM_NAME}' in default pool..."
+
+RESPONSE=$(osmo_curl PUT "${OSMO_URL}/api/configs/pool/default/platform/${GPU_PLATFORM_NAME}" \
+  -w "\n%{http_code}" \
+  -d @"${SCRIPT_DIR}/gpu_platform_update.json")
+HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+BODY=$(echo "$RESPONSE" | sed '$d')
+
+if [[ "$HTTP_CODE" -ge 200 && "$HTTP_CODE" -lt 300 ]]; then
+    log_success "Platform '${GPU_PLATFORM_NAME}' created (HTTP ${HTTP_CODE})"
+else
+    log_error "Failed to create platform '${GPU_PLATFORM_NAME}' (HTTP ${HTTP_CODE})"
+    echo "Response: ${BODY}"
+    exit 1
+fi
+
+# -----------------------------------------------------------------------------
+# Step 4: Verify configuration
+# -----------------------------------------------------------------------------
+log_info "Verifying configuration..."
+
+echo ""
+echo "Pod templates:"
+osmo_curl GET "${OSMO_URL}/api/configs/pod_template" | jq 'keys'
+
+echo ""
+echo "Platform '${GPU_PLATFORM_NAME}' config:"
+osmo_curl GET "${OSMO_URL}/api/configs/pool/default" | jq ".platforms.${GPU_PLATFORM_NAME}"
+
+# -----------------------------------------------------------------------------
+# Step 5: Check GPU resources
+# -----------------------------------------------------------------------------
+log_info "Checking GPU resources..."
+sleep 3  # Wait for backend to pick up changes
+
+RESOURCE_JSON=$(osmo_curl GET "${OSMO_URL}/api/resources" 2>/dev/null || echo '{}')
+RESOURCE_COUNT=$(echo "$RESOURCE_JSON" | jq '[(.resources // [])[] | select(.allocatable_fields.gpu != null)] | length' 2>/dev/null || echo "0")
+echo "GPU nodes visible to OSMO: ${RESOURCE_COUNT}"
+
+if [[ "$RESOURCE_COUNT" -gt 0 ]]; then
+    echo ""
+    echo "GPU resources:"
+    echo "$RESOURCE_JSON" | jq '.resources[] | select(.allocatable_fields.gpu != null) | {name: .name, gpu: .allocatable_fields.gpu, cpu: .allocatable_fields.cpu, memory: .allocatable_fields.memory}'
+fi
+
+# -----------------------------------------------------------------------------
+# Step 6: Set default pool profile
+# -----------------------------------------------------------------------------
+log_info "Setting default pool to 'default'..."
+osmo profile set pool default 2>/dev/null && log_success "Default pool set" || log_warning "Could not set default pool (set manually: osmo profile set pool default)"
+
+# -----------------------------------------------------------------------------
+# Done
+# -----------------------------------------------------------------------------
+log_success "GPU platform configuration complete"
+echo ""
+echo "To submit a GPU workflow:"
+echo "  osmo workflow submit workflows/osmo/gpu_test.yaml -p default --platform ${GPU_PLATFORM_NAME}"
+echo ""
+echo "Or test via curl:"
+echo "  curl -X POST ${OSMO_URL}/api/workflow -H 'Content-Type: application/yaml' --data-binary @workflows/osmo/gpu_test.yaml"
