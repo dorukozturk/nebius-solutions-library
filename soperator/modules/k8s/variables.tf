@@ -155,6 +155,11 @@ variable "node_group_workers_v2" {
       policy          = optional(string)
       reservation_ids = optional(list(string))
     }))
+    local_nvme = optional(object({
+      enabled         = optional(bool, false)
+      mount_path      = optional(string, "/mnt/local-nvme")
+      filesystem_type = optional(string, "ext4")
+    }), {})
     nodeset_index = number
     subset_index  = number
   }))

@@ -722,6 +722,11 @@ variable "slurm_nodeset_workers" {
     features         = optional(list(string))
     create_partition = optional(bool)
     ephemeral_nodes  = optional(bool, false)
+    local_nvme = optional(object({
+      enabled         = optional(bool, false)
+      mount_path      = optional(string, "/mnt/local-nvme")
+      filesystem_type = optional(string, "ext4")
+    }), {})
   }))
   nullable = false
   default = [{
@@ -770,6 +775,24 @@ variable "slurm_nodeset_workers" {
       worker.autoscaling.min_size == null || worker.autoscaling.min_size <= worker.size
     ])
     error_message = "Worker nodeset autoscaling.min_size must be less than or equal to size."
+  }
+
+  validation {
+    condition = alltrue([
+      for worker in var.slurm_nodeset_workers :
+      !try(worker.local_nvme.enabled, false) || (
+        startswith(try(worker.local_nvme.mount_path, "/mnt/local-nvme"), "/")
+      )
+    ])
+    error_message = "When worker local NVMe is enabled, mount_path must be an absolute path."
+  }
+
+  validation {
+    condition = alltrue([
+      for worker in var.slurm_nodeset_workers :
+      contains(["ext4", "xfs"], try(worker.local_nvme.filesystem_type, "ext4"))
+    ])
+    error_message = "When worker local NVMe filesystem_type is set, it must be `ext4` or `xfs`."
   }
 }
 
@@ -920,6 +943,26 @@ resource "terraform_data" "check_slurm_nodeset" {
     }
 
     # TODO: precondition for total node group count
+  }
+}
+
+resource "terraform_data" "check_local_nvme" {
+  lifecycle {
+    precondition {
+      condition = (
+        !anytrue([
+          for worker in var.slurm_nodeset_workers :
+          try(worker.local_nvme.enabled, false)
+        ]) ||
+        alltrue([
+          for worker in var.slurm_nodeset_workers :
+          !try(worker.local_nvme.enabled, false) || (
+            try(module.resources.local_nvme_supported_by_region_platform_preset[var.region][worker.resource.platform][worker.resource.preset], false)
+          )
+        ])
+      )
+      error_message = "Local NVMe is enabled, but one or more worker nodesets use unsupported region/platform/preset."
+    }
   }
 }
 
