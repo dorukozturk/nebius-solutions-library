@@ -77,6 +77,12 @@ variable "filestore_block_size_kibibytes" {
   default     = 4 # 4kb
 }
 
+variable "filestore_mount_path" {
+  description = "Mount path for the shared filesystem on Kubernetes nodes."
+  type        = string
+  default     = "/mnt/data"
+}
+
 # K8s access
 variable "ssh_user_name" {
   description = "SSH username."
@@ -190,9 +196,14 @@ variable "gpu_disk_size" {
 }
 
 variable "enable_gpu_cluster" {
-  description = "Infiniband's fabric name."
+  description = "Enable GPU clustering and InfiniBand for the GPU node group."
   type        = bool
   default     = true
+
+  validation {
+    condition     = !var.enable_gpu_cluster || startswith(local.gpu_nodes_preset, "8gpu-")
+    error_message = "GPU clustering requires an 8-GPU preset. Set 'enable_gpu_cluster = false' for single-GPU presets such as '${local.gpu_nodes_preset}'."
+  }
 }
 
 variable "infiniband_fabric" {
@@ -231,8 +242,11 @@ variable "mig_parted_config" {
   default     = null
 
   validation {
-    condition     = var.mig_parted_config == null || contains(local.valid_mig_parted_configs[local.gpu_nodes_platform], coalesce(var.mig_parted_config, "null"))
-    error_message = "Invalid MIG config '${coalesce(var.mig_parted_config, "null")}' for the selected GPU platform '${local.gpu_nodes_platform}'. Must be one of ${join(", ", local.valid_mig_parted_configs[local.gpu_nodes_platform])} or left unset."
+    condition = var.mig_parted_config == null || contains(
+      lookup(local.valid_mig_parted_configs, local.gpu_nodes_platform, []),
+      var.mig_parted_config,
+    )
+    error_message = length(lookup(local.valid_mig_parted_configs, local.gpu_nodes_platform, [])) > 0 ? "Invalid MIG config '${coalesce(var.mig_parted_config, "null")}' for the selected GPU platform '${local.gpu_nodes_platform}'. Must be one of ${join(", ", lookup(local.valid_mig_parted_configs, local.gpu_nodes_platform, []))} or left unset." : "GPU platform '${local.gpu_nodes_platform}' does not support MIG partitioning. Leave 'mig_parted_config' unset."
   }
 }
 
@@ -397,4 +411,15 @@ variable "custom_driver" {
     error_message = "You cannot enable both 'custom_driver' and 'gpu_nodes_driverfull_image' at the same time."
   }
 
+}
+
+variable "filesystem_csi" {
+  description = "Configuration for Nebius Shared Filesystem CSI installation when a shared filesystem is present. Set previous_default_storage_class_name to an empty string to skip demoting another StorageClass."
+  type = object({
+    chart_version                       = optional(string, "0.1.5")
+    namespace                           = optional(string, "kube-system")
+    make_default_storage_class          = optional(bool, true)
+    previous_default_storage_class_name = optional(string, "compute-csi-default-sc")
+  })
+  default = {}
 }

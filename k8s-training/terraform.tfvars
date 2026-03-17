@@ -1,10 +1,11 @@
 # Mk8s cluster name. By default it is "k8s-training"
 cluster_name = "k8s-training"
+subnet_id    = "vpcsubnet-e00n9w6asss3dapm8e"
 
 # SSH config
 ssh_user_name = "ubuntu" # Username you want to use to connect to the nodes
 ssh_public_key = {
-  key = "put customers public ssh key here"
+  key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMtvHTRElpPQQsfHXZMvzoAy4qxjMxCHXDa4ICWXiAOT linux-vm"
   # path = "put path to public ssh key here"
 }
 
@@ -31,13 +32,15 @@ gpu_nodes_autoscaling = {
 }
 gpu_node_groups = 1 # In case you need more then 100 nodes in cluster you have to put multiple node groups
 # CPU platform and presets: https://docs.nebius.com/compute/virtual-machines/types#cpu-configurations
-cpu_nodes_platform = "cpu-d3"     # CPU nodes platform
-cpu_nodes_preset   = "4vcpu-16gb" # CPU nodes preset
+cpu_nodes_platform = "cpu-d3"       # CPU nodes platform
+cpu_nodes_preset   = "32vcpu-128gb" # CPU nodes preset
 # GPU platform and preset: https://docs.nebius.com/compute/virtual-machines/types#gpu-configurations
-gpu_nodes_platform = "gpu-h200-sxm"        # GPU nodes platform: gpu-h100-sxm, gpu-h200-sxm, gpu-b200-sxm
-gpu_nodes_preset   = "8gpu-128vcpu-1600gb" # GPU nodes preset: 8gpu-128vcpu-1600gb, 8gpu-128vcpu-1600gb, 8gpu-160vcpu-1792gb
+gpu_nodes_platform = "gpu-l40s-a"        # GPU nodes platform: gpu-h100-sxm, gpu-h200-sxm, gpu-b200-sxm
+gpu_nodes_preset   = "1gpu-40vcpu-160gb" # GPU nodes preset: 8gpu-128vcpu-1600gb, 8gpu-128vcpu-1600gb, 8gpu-160vcpu-1792gb
+
 # Infiniband fabrics: https://docs.nebius.com/compute/clusters/gpu#fabrics
-infiniband_fabric = "" # Infiniband fabric name
+infiniband_fabric  = ""    # Infiniband fabric name
+enable_gpu_cluster = false # Single-GPU L40S presets do not support GPU clustering / InfiniBand in MK8s
 
 gpu_nodes_driverfull_image = true
 enable_k8s_node_group_sa   = true
@@ -65,10 +68,10 @@ loki = {
   replication_factor = 2    # Number of Loki replicas for each log chunk (higher = better availability, more storage/network cost)
 }
 # Storage
-enable_filestore               = false # Enable or disable Filestore integration with true or false
-existing_filestore             = ""    # If enable_filestore = true, with this variable we can add existing filestore. Require string, example existing_filestore = "computefilesystem-e00r7z9vfxmg1bk99s"
-filestore_disk_size_gibibytes  = 100   # Set Filestore disk size in Gbytes.
-filestore_block_size_kibibytes = 4     # Set Filestore block size in bytes
+enable_filestore               = true # Enable or disable Filestore integration with true or false
+existing_filestore             = "computefilesystem-e00ybpryq4j5zmn9dc"   # If enable_filestore = true, with this variable we can add existing filestore. Require string, example existing_filestore = "computefilesystem-e00r7z9vfxmg1bk99s"
+filestore_disk_size_gibibytes  = 100  # Set Filestore disk size in Gbytes.
+filestore_block_size_kibibytes = 4    # Set Filestore block size in bytes
 
 # KubeRay Cluster
 # for GPU isolation to work with kuberay, gpu_nodes_driverfull_image must be set 
@@ -98,4 +101,3 @@ kuberay_max_gpu_replicas = 8
 # KubeRay Service
 # Enable to deploy KubeRay Operator with RayService CR 
 enable_kuberay_service = false
-
