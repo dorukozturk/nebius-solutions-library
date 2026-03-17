@@ -74,7 +74,11 @@ log_info "Using Nebius Managed PostgreSQL..."
     
     # Get password - try MysteryBox first, then Terraform output, then env vars
     # MysteryBox secret ID is set by secrets-init.sh as TF_VAR_postgresql_mysterybox_secret_id
+    # Fall back to reading the secret ID directly from Terraform outputs
     POSTGRES_SECRET_ID="${TF_VAR_postgresql_mysterybox_secret_id:-${OSMO_POSTGRESQL_SECRET_ID:-}}"
+    if [[ -z "$POSTGRES_SECRET_ID" ]]; then
+        POSTGRES_SECRET_ID=$(get_tf_output "mysterybox_secrets.postgresql_secret_id" "../001-iac" || echo "")
+    fi
     
     if [[ -n "$POSTGRES_SECRET_ID" ]]; then
         log_info "Reading PostgreSQL password from MysteryBox (secret: $POSTGRES_SECRET_ID)..."
@@ -701,9 +705,11 @@ EOF
     helm repo add bitnami https://charts.bitnami.com/bitnami --force-update 2>/dev/null || true
     helm repo update bitnami
     
-    # Determine if Keycloak should use external TLS ingress
+    # Determine if Keycloak should use external TLS ingress.
+    # Triggers when TLS is enabled with an ingress hostname, OR when KEYCLOAK_HOSTNAME is
+    # set explicitly (e.g. KEYCLOAK_HOSTNAME-only deployments with no OSMO_INGRESS_HOSTNAME).
     KC_EXTERNAL="false"
-    if [[ "${OSMO_TLS_ENABLED:-false}" == "true" && -n "${OSMO_INGRESS_HOSTNAME:-}" ]]; then
+    if [[ ("${OSMO_TLS_ENABLED:-false}" == "true" && -n "${OSMO_INGRESS_HOSTNAME:-}") || -n "${KEYCLOAK_HOSTNAME:-}" ]]; then
         # Check TLS secret for auth domain exists
         if kubectl get secret "${KC_TLS_SECRET}" -n "${OSMO_NAMESPACE}" &>/dev/null || \
            kubectl get secret "${KC_TLS_SECRET}" -n "${INGRESS_NAMESPACE:-ingress-nginx}" &>/dev/null; then
@@ -1519,7 +1525,7 @@ EOF
         echo "  Admin console: https://${AUTH_DOMAIN}/admin"
         echo "  Admin: admin / ${KEYCLOAK_ADMIN_PASSWORD}"
         if [[ "${NEBIUS_SSO_ENABLED:-false}" == "true" ]]; then
-            echo "  Login: Nebius SSO (primary); no default username/password"
+            echo "  Login: Nebius SSO button on Keycloak login page + local osmo-admin fallback (set CREATE_OSMO_TEST_USER=false to suppress local user)"
         else
             echo "  Test User: osmo-admin / osmo-admin"
         fi

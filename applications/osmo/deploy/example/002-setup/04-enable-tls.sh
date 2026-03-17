@@ -24,7 +24,7 @@
 #      (A record for cert-manager/HTTP-01; TXT record for certbot/DNS-01)
 #
 # Usage:
-#   ./03b-enable-tls.sh [hostname]
+#   ./04-enable-tls.sh [hostname]
 #     - If [hostname] is omitted, the script uses OSMO_INGRESS_HOSTNAME.
 #
 # Optional environment variables:

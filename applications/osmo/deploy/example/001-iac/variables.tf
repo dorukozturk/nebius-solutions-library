@@ -123,9 +123,9 @@ variable "cpu_nodes_platform" {
 }
 
 variable "cpu_nodes_preset" {
-  description = "Resource preset for CPU nodes"
+  description = "Resource preset for CPU nodes (minimum 32vcpu-128gb recommended: Redis requests 8vCPU+52Gi)"
   type        = string
-  default     = "16vcpu-64gb"
+  default     = "32vcpu-128gb"
 }
 
 variable "cpu_disk_type" {

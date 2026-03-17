@@ -318,8 +318,8 @@ Youâ€™re connected correctly when the **full login flow** works end-to-end: youâ
 ### 1. Definitive check: complete login
 
 1. Open the OSMO Web UI or the Keycloak login URL for the `osmo` realm (e.g. `https://<AUTH_DOMAIN>/realms/osmo/...`).
-2. You should be **redirected to Nebius SSO** (corporate login page).
-3. Sign in with your Nebius/corporate credentials.
+2. You should see the Keycloak login page with a **"Nebius SSO" button** (Keycloak does not auto-redirect; `authenticateByDefault` is `false` so local login remains available alongside SSO).
+3. Click the **Nebius SSO** button and sign in with your Nebius/corporate credentials.
 4. You should be **redirected back** to Keycloak and then to OSMO with a valid session (no error, UI loads).
 
 If all four steps succeed, the connection to Nebius SSO is correct (issuer, client id/secret, and redirect URI all match and work).

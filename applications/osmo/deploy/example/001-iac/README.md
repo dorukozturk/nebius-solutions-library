@@ -27,7 +27,7 @@ This directory contains Terraform configurations for deploying OSMO infrastructu
 # Recommended: Cost-optimized with secure private access
 cp terraform.tfvars.cost-optimized-secure.example terraform.tfvars
 
-# Edit if needed (tenant_id and parent_id set via environment)
+# Edit if needed (tenant_id and parent_id set via environment); optional SSH key
 vim terraform.tfvars
 
 # Deploy

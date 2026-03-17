@@ -125,6 +125,16 @@ if [[ -z "${OSMO_SERVICE_TOKEN:-}" ]]; then
             # Derive Keycloak URL: KEYCLOAK_HOSTNAME env (from osmo-deploy.env) > ingress host > port-forward fallback
             KC_INGRESS_HOST=$(kubectl get ingress -n "${OSMO_NAMESPACE:-osmo}" keycloak -o jsonpath='{.spec.rules[0].host}' 2>/dev/null || echo "")
             KC_PF_PID=""
+            # KC_CURL_TLS_OPT: set to "-k" for self-signed certs (.local hostnames or explicit override).
+            # Set OSMO_KC_SKIP_TLS_VERIFY=true to force this for any hostname.
+            KC_CURL_TLS_OPT=""
+            if [[ "${OSMO_KC_SKIP_TLS_VERIFY:-false}" == "true" ]]; then
+                KC_CURL_TLS_OPT="-k"
+                log_warning "TLS verification disabled for Keycloak token request (OSMO_KC_SKIP_TLS_VERIFY=true)"
+            elif [[ "${KEYCLOAK_HOSTNAME:-}" == *.local || "${KC_INGRESS_HOST:-}" == *.local ]]; then
+                KC_CURL_TLS_OPT="-k"
+                log_warning "Self-signed cert detected (.local hostname) — skipping TLS verification for Keycloak token request"
+            fi
             if [[ -n "${KEYCLOAK_HOSTNAME:-}" ]]; then
                 KEYCLOAK_TOKEN_URL="https://${KEYCLOAK_HOSTNAME}/realms/osmo/protocol/openid-connect/token"
                 log_info "Keycloak token endpoint (KEYCLOAK_HOSTNAME): ${KEYCLOAK_TOKEN_URL}"
@@ -184,7 +194,7 @@ if [[ -z "${OSMO_SERVICE_TOKEN:-}" ]]; then
             # in 04-deploy-osmo-control-plane.sh or set OSMO_KC_ADMIN_USER/OSMO_KC_ADMIN_PASS to a valid local user.
 
             log_info "Authenticating with Keycloak as '${KC_ADMIN_USER}'..."
-            KC_RESPONSE=$(curl -s -X POST "${KEYCLOAK_TOKEN_URL}" \
+            KC_RESPONSE=$(curl -s ${KC_CURL_TLS_OPT} -X POST "${KEYCLOAK_TOKEN_URL}" \
                 -d "grant_type=password" \
                 -d "client_id=osmo-device" \
                 -d "username=${KC_ADMIN_USER}" \
