@@ -178,6 +178,24 @@ variable "login_sshd_config_map_ref_name" {
   default     = ""
 }
 
+variable "sssd_conf_secret_ref_name" {
+  description = "Name of Secret containing sssd.conf propagated to controller, login, and worker sssd containers."
+  type        = string
+  default     = ""
+}
+
+variable "sssd_ldap_ca_config_map_ref_name" {
+  description = "Name of ConfigMap containing LDAP CA certificates propagated to controller, login, and worker sssd containers."
+  type        = string
+  default     = ""
+}
+
+variable "sssd_enabled" {
+  description = "Whether to enable the SSSD sidecar on Slurm controller, login, and worker nodes."
+  type        = bool
+  default     = false
+}
+
 variable "login_ssh_root_public_keys" {
   description = "Authorized keys accepted for connecting to Slurm login nodes via SSH as 'root' user."
   type        = list(string)

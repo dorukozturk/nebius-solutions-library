@@ -449,6 +449,15 @@ resources:
                 k8sNodeFilterName: system
 
             slurmNodes:
+              sssd:
+                enabled: ${slurm_cluster.nodes.sssd.enabled}
+                resources:
+                  cpu: ${slurm_cluster.nodes.sssd.resources.cpu * 1000}m
+                  memory: ${slurm_cluster.nodes.sssd.resources.memory}Gi
+                  ephemeralStorage: ${slurm_cluster.nodes.sssd.resources.ephemeral_storage}Gi
+                sssdConfSecretRefName: "${slurm_cluster.nodes.sssd.conf_secret_ref_name}"
+                sssdLdapCAConfigMapRefName: "${slurm_cluster.nodes.sssd.ldap_ca_config_map_ref_name}"
+
               accounting:
                 enabled: ${accounting_enabled}
                 k8sNodeFilterName: ${slurm_cluster.k8s_node_filters.accounting.name}
