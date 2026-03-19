@@ -99,3 +99,5 @@ kuberay_max_gpu_replicas = 8
 # Enable to deploy KubeRay Operator with RayService CR 
 enable_kuberay_service = false
 
+# enable OPA gatekeeper (default: false)
+# enable_opa_gatekeeper = true 
