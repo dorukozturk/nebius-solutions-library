@@ -204,6 +204,16 @@ nodesets:
           security:
             appArmorProfile: unconfined
 
+        sssd:
+          enabled: ${sssd.enabled}
+          resources:
+            cpu: ${sssd.resources.cpu * 1000}m
+            memory: ${sssd.resources.memory}Gi
+            ephemeralStorage: ${sssd.resources.ephemeral_storage}Gi
+
+        sssdConfSecretRefName: ${jsonencode(sssd.conf_secret_ref_name)}
+        sssdLdapCAConfigMapRefName: ${jsonencode(sssd.ldap_ca_config_map_ref_name)}
+
         configMapRefSupervisord: custom-supervisord-config
         configMapRefSshd: ${sshd.config_map_ref}
 

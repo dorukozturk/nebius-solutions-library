@@ -97,6 +97,11 @@ locals {
       memory            = 0.5
       ephemeral_storage = 5
     }
+    sssd = {
+      cpu               = 0.2
+      memory            = 0.5
+      ephemeral_storage = 5
+    }
     exporter = {
       cpu               = 0.25
       memory            = 0.25

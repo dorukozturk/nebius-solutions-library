@@ -418,6 +418,21 @@ slurm_login_public_ip = true
 # ---
 tailscale_enabled = false
 
+# Whether to enable the SSSD sidecar on Slurm controller, login, and worker nodes.
+# By default, false
+# ---
+slurm_sssd_enabled = false
+
+# Name of Secret containing sssd.conf for controller, login, and worker sssd containers.
+# By default, empty
+# ---
+slurm_sssd_conf_secret_ref_name = ""
+
+# Name of ConfigMap containing LDAP CA certificates for controller, login, and worker sssd containers.
+# By default, empty
+# ---
+slurm_sssd_ldap_ca_config_map_ref_name = ""
+
 # Authorized keys accepted for connecting to Slurm login nodes via SSH as 'root' user.
 # ---
 slurm_login_ssh_root_public_keys = [

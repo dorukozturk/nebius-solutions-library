@@ -491,11 +491,14 @@ module "slurm" {
     }
   }]
 
-  login_allocation_id            = module.k8s.static_ip_allocation_id
-  login_public_ip                = var.slurm_login_public_ip
-  tailscale_enabled              = var.tailscale_enabled
-  login_sshd_config_map_ref_name = var.slurm_login_sshd_config_map_ref_name
-  login_ssh_root_public_keys     = var.slurm_login_ssh_root_public_keys
+  login_allocation_id              = module.k8s.static_ip_allocation_id
+  login_public_ip                  = var.slurm_login_public_ip
+  tailscale_enabled                = var.tailscale_enabled
+  login_sshd_config_map_ref_name   = var.slurm_login_sshd_config_map_ref_name
+  sssd_conf_secret_ref_name        = var.slurm_sssd_conf_secret_ref_name
+  sssd_ldap_ca_config_map_ref_name = var.slurm_sssd_ldap_ca_config_map_ref_name
+  sssd_enabled                     = var.slurm_sssd_enabled
+  login_ssh_root_public_keys       = var.slurm_login_ssh_root_public_keys
 
   flux_namespace = local.flux_namespace
 
