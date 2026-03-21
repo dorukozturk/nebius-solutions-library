@@ -2269,11 +2269,15 @@ if [[ "${DEPLOY_UI:-true}" == "true" ]]; then
             --set sidecars.oauth2Proxy.secretName=oauth2-proxy-secrets
             --set sidecars.oauth2Proxy.clientSecretKey=client_secret
             --set sidecars.oauth2Proxy.cookieSecretKey=cookie_secret
+            # Federated logout: clear the oauth2-proxy cookie and terminate the
+            # Keycloak browser session so "Sign out" also works in incognito.
+            --set "sidecars.oauth2Proxy.oidcEndSessionUrl=${KEYCLOAK_EXTERNAL_URL}/realms/osmo/protocol/openid-connect/logout"
             --set "sidecars.oauth2Proxy.extraArgs[0]=--insecure-oidc-allow-unverified-email=true"
+            --set "sidecars.oauth2Proxy.extraArgs[1]=--whitelist-domain=${AUTH_DOMAIN}"
         )
         if [[ "${NEBIUS_SSO_ENABLED:-false}" == "true" ]]; then
             UI_HELM_ARGS+=(
-                --set "sidecars.oauth2Proxy.extraArgs[1]=--oidc-email-claim=preferred_username"
+                --set "sidecars.oauth2Proxy.extraArgs[2]=--oidc-email-claim=preferred_username"
             )
         fi
     else
