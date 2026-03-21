@@ -55,29 +55,15 @@ check_kubectl || exit 1
 # -----------------------------------------------------------------------------
 log_info "Starting port-forward to OSMO service..."
 
-start_osmo_port_forward "${OSMO_NAMESPACE}" 8080
+start_osmo_api_session "${OSMO_NAMESPACE}" 8080 30 || exit 1
+OSMO_URL="${OSMO_API_URL}"
 
 cleanup_port_forward() {
-    if [[ -n "${PORT_FORWARD_PID:-}" ]]; then
-        kill $PORT_FORWARD_PID 2>/dev/null || true
-        wait $PORT_FORWARD_PID 2>/dev/null || true
-    fi
+    stop_port_forward
 }
 trap cleanup_port_forward EXIT
 
-# Wait for port-forward to be ready
-log_info "Waiting for port-forward to be ready..."
-max_wait=30
-elapsed=0
-while ! curl -s -o /dev/null -w "%{http_code}" "${OSMO_URL}/api/version" 2>/dev/null | grep -q "200\|401\|403"; do
-    sleep 1
-    ((elapsed += 1))
-    if [[ $elapsed -ge $max_wait ]]; then
-        log_error "Port-forward failed to start within ${max_wait}s"
-        exit 1
-    fi
-done
-log_success "Port-forward ready"
+log_success "Port-forward ready at ${OSMO_URL}"
 
 # -----------------------------------------------------------------------------
 # Step 1: Fix default_user pod template (remove GPU resources)
@@ -174,7 +160,13 @@ osmo_curl GET "${OSMO_URL}/api/configs/pod_template" | jq 'keys'
 
 echo ""
 echo "Platform '${GPU_PLATFORM_NAME}' config:"
-osmo_curl GET "${OSMO_URL}/api/configs/pool/default" | jq ".platforms.${GPU_PLATFORM_NAME}"
+osmo_curl GET "${OSMO_URL}/api/configs/pool/default" | jq --arg platform "${GPU_PLATFORM_NAME}" '
+  if (.platforms | type) == "object" then
+    .platforms[$platform]
+  else
+    (.platforms[]? | select(.name == $platform))
+  end
+'
 
 # -----------------------------------------------------------------------------
 # Step 5: Check GPU resources
@@ -183,13 +175,40 @@ log_info "Checking GPU resources..."
 sleep 3  # Wait for backend to pick up changes
 
 RESOURCE_JSON=$(osmo_curl GET "${OSMO_URL}/api/resources" 2>/dev/null || echo '{}')
-RESOURCE_COUNT=$(echo "$RESOURCE_JSON" | jq '[(.resources // [])[] | select(.allocatable_fields.gpu != null)] | length' 2>/dev/null || echo "0")
+RESOURCE_COUNT=$(echo "$RESOURCE_JSON" | jq '
+  (
+    if type == "array" then
+      .
+    else
+      (.resources // [])
+    end
+  )
+  | map(select((.allocatable_fields.gpu // .gpu // null) != null))
+  | length
+' 2>/dev/null || echo "0")
 echo "GPU nodes visible to OSMO: ${RESOURCE_COUNT}"
 
 if [[ "$RESOURCE_COUNT" -gt 0 ]]; then
     echo ""
     echo "GPU resources:"
-    echo "$RESOURCE_JSON" | jq '.resources[] | select(.allocatable_fields.gpu != null) | {name: .name, gpu: .allocatable_fields.gpu, cpu: .allocatable_fields.cpu, memory: .allocatable_fields.memory}'
+    echo "$RESOURCE_JSON" | jq '
+      (
+        if type == "array" then
+          .
+        else
+          (.resources // [])
+        end
+      )[]
+      | select((.allocatable_fields.gpu // .gpu // null) != null)
+      | {
+          name: .name,
+          pool: (.pool_name // .pool // null),
+          platform: (.platform_name // .platform // null),
+          gpu: (.allocatable_fields.gpu // .gpu // null),
+          cpu: (.allocatable_fields.cpu // .cpu // null),
+          memory: (.allocatable_fields.memory // .memory // null)
+        }
+    '
 fi
 
 # -----------------------------------------------------------------------------

@@ -21,7 +21,7 @@ This document describes how authentication works for OSMO on Nebius and how to i
 
 ### REST API / CLI
 
-- **Web UI (redirect flow):** Opening the OSMO URL in a browser uses the **authorization code flow**: redirect to Keycloak → Nebius SSO (or local login) → redirect back to `/getAToken` with no manual code. That is the expected SSO experience.
+- **Web UI (redirect flow):** Opening the OSMO URL in a browser uses the **authorization code flow**: redirect to Keycloak → Nebius SSO (or local login) → redirect back to `https://<OSMO_HOST>/oauth2/callback` with no manual code. That is the expected SSO experience.
 - **CLI `osmo login`:** The OSMO server may return the **device authorization flow** for the CLI. The CLI then opens a browser to Keycloak’s device page and should print a **user code in the terminal** for you to enter there. If the terminal never shows a code, use the dev (password) method below instead.
 - **CLI without device code (recommended with SSO):** Use the **dev** method with the test user so the CLI logs in via password and never opens the device page:  
   `osmo login https://<OSMO_HOST> --method dev --username osmo-admin`  
@@ -184,7 +184,7 @@ export CREATE_OSMO_TEST_USER="true"
 # Then run 04-deploy-osmo-control-plane.sh
 ```
 
-The `osmo-admin` user will be created and can be used for `OSMO_KC_ADMIN_USER` / `OSMO_KC_ADMIN_PASS` in `05-deploy-osmo-backend.sh`.
+The `osmo-admin` user will be created and can be used for `OSMO_KC_ADMIN_USER` / `OSMO_KC_ADMIN_PASS` in `06-deploy-osmo-backend.sh`.
 
 ### 5. Group/role attribute (optional)
 
@@ -244,7 +244,7 @@ If you ran `04-deploy-osmo-control-plane.sh` and saw **"OSMO API authentication 
    export NEBIUS_SSO_ISSUER_URL="https://auth.nebius.com"
    export NEBIUS_SSO_CLIENT_ID="<your-oidc-client-id>"
    export NEBIUS_SSO_CLIENT_SECRET="<your-oidc-client-secret>"
-   # Optional: so 05-deploy-osmo-backend.sh can get a token (osmo-admin user)
+   # Optional: so 06-deploy-osmo-backend.sh can authenticate the backend operator (osmo-admin user)
    export CREATE_OSMO_TEST_USER="true"
    ```
 
@@ -333,6 +333,8 @@ If all four steps succeed, the connection to Nebius SSO is correct (issuer, clie
 | After logging in at Nebius SSO you get an **error page** from Keycloak (e.g. invalid client, unauthorized) | Wrong **client ID** or **client secret** in Keycloak (or in the Nebius SSO client). Re-check `NEBIUS_SSO_CLIENT_ID` and the secret (env or `keycloak-nebius-sso-secret`). |
 | Keycloak login page appears **without** redirecting to Nebius SSO (e.g. local login form only) | IdP not created or not default: check job logs for “Nebius SSO IdP created”; in Keycloak Admin → Realm osmo → Identity providers, confirm “nebius-sso” exists and is enabled. |
 | Redirect to Nebius SSO **never happens** (error or Keycloak error page first) | **Issuer URL** wrong or Nebius SSO unreachable from Keycloak (e.g. discovery fails). Check `NEBIUS_SSO_ISSUER_URL`, network, and Keycloak logs. |
+| Browser returns to `https://<OSMO_HOST>/oauth2/callback` and then shows a **403** / "Access was denied" page | `oauth2-proxy` rejected the callback because the brokered Keycloak ID token either did not present `email_verified=true` or did not contain an `email` claim at all. The deploy script now adds `--insecure-oidc-allow-unverified-email=true` and, for Nebius SSO, `--oidc-email-claim=preferred_username` to the OSMO `oauth2-proxy` sidecars. **Re-run 05** so service/router/UI pick up the updated sidecar args. |
+| Login works, but opening `https://<OSMO_HOST>` again a few minutes later shows **JWT expired** | The browser session cookie outlived the embedded Keycloak access token. In the shipped realm, Keycloak issues 5-minute browser access tokens, while the old `oauth2-proxy` config refreshed only every hour. The deploy script now sets `sidecars.oauth2Proxy.cookieRefresh=4m` so the session refreshes before token expiry. **Re-run 05** so service/router/UI pick up the new refresh interval. |
 | **CLI opens "Device Login" page and asks for a code**, but the terminal never showed a code / **"Invalid code"** | The CLI uses the **device flow**; the code should appear in the terminal. If it doesn’t or you prefer the redirect-style flow, use password login instead: `osmo login https://<OSMO_HOST> --method dev --username osmo-admin` (requires the test user; set `CREATE_OSMO_TEST_USER=true` before 04). |
 | **"Successfully logged in" but next command returns login HTML / "Error decoding JSON"** (e.g. `osmo pool list`) | The API request is unauthenticated (token not sent or lost on redirect). **Workaround:** use port-forward so the CLI talks to localhost and no redirect occurs: `kubectl port-forward -n osmo svc/osmo-service 8080:80`, then `osmo login http://localhost:8080 --method dev --username osmo-admin` and run your command again. If it works, the CLI may be dropping the token when the server redirects to Keycloak. |
 | **"Could not send authentication request"** / **"Param was null"** in Keycloak logs | Keycloak could not build the IdP auth URL. The deploy script now sets **explicit** `authorizationUrl` and `tokenUrl` for Nebius SSO (`.../oauth2/authorize`, `.../oauth2/token`) so discovery is not required. If you still see this, **re-run 04** (or delete job `keycloak-osmo-setup` and re-run 04) so the IdP is recreated with these URLs. Otherwise check egress and [Troubleshooting](#troubleshooting-could-not-send-authentication-request). |

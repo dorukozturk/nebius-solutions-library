@@ -857,6 +857,7 @@
       "clientAuthenticatorType": "client-secret",
       "secret": "**********",
       "redirectUris": [
+        "https://default.com/oauth2/callback",
         "https://default.com/setup/getAToken",
         "https://default.com/getAToken",
         "https://default.com/api/auth/getAToken"

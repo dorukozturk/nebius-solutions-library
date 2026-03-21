@@ -58,9 +58,9 @@ if [[ -z "$S3_BUCKET" ]]; then
 fi
 
 # Datasets are stored under the osmo-datasets prefix within the bucket.
-# The path uses the standard s3://<bucket>/<prefix> format; the actual endpoint
-# is configured separately via AWS_ENDPOINT_URL_S3 in the Helm chart / pod template.
+# The path uses the standard s3://<bucket>/<prefix> format.
 DATASET_PATH="s3://${S3_BUCKET}/osmo-datasets"
+S3_CREDENTIAL_ENDPOINT="s3://${S3_BUCKET}"
 
 # -----------------------------------------------------------------------------
 # Get storage credentials (for default_credential on the dataset bucket)
@@ -98,30 +98,17 @@ log_success "OSMO bucket name: ${DATASET_BUCKET_NAME}"
 log_info "Starting port-forward to OSMO service..."
 
 OSMO_NS="${OSMO_NAMESPACE:-osmo}"
-start_osmo_port_forward "${OSMO_NS}" 8080
+start_osmo_api_session "${OSMO_NS}" 8080 30 || exit 1
+OSMO_URL="${OSMO_API_URL}"
 
 cleanup_port_forward() {
-    if [[ -n "${PORT_FORWARD_PID:-}" ]]; then
-        kill $PORT_FORWARD_PID 2>/dev/null || true
-        wait $PORT_FORWARD_PID 2>/dev/null || true
-    fi
+    stop_port_forward
 }
 trap cleanup_port_forward EXIT
 
-log_info "Waiting for port-forward..."
-max_wait=30
-elapsed=0
-while ! curl -s -o /dev/null -w "%{http_code}" "http://localhost:8080/api/version" 2>/dev/null | grep -q "200\|401\|403"; do
-    sleep 1
-    elapsed=$((elapsed + 1))
-    if [[ $elapsed -ge $max_wait ]]; then
-        log_error "Port-forward failed to start within ${max_wait}s"
-        exit 1
-    fi
-done
-log_success "Port-forward ready"
+log_success "Port-forward ready at ${OSMO_URL}"
 
-osmo_login 8080 || exit 1
+osmo_login "${OSMO_API_PORT}" || exit 1
 
 # -----------------------------------------------------------------------------
 # Build dataset config: add/update Nebius bucket and set as default bucket
@@ -129,14 +116,16 @@ osmo_login 8080 || exit 1
 # -----------------------------------------------------------------------------
 log_info "Building DATASET config (bucket + default_bucket)..."
 
-# Build bucket config object (with optional default_credential)
-# PATCH API accepts only access_key_id and access_key in default_credential;
-# endpoint/region are taken from the bucket at runtime.
+# Build bucket config object (with optional default_credential).
+# Dataset bucket credentials follow the DATA credential schema for S3-compatible
+# storage: endpoint=s3://<bucket>, region=<region>, override_url=<https endpoint>.
 BUCKET_JSON="/tmp/osmo_dataset_bucket_obj.json"
 if [[ -n "$S3_ACCESS_KEY" && -n "$S3_SECRET_KEY" ]]; then
     jq -n \
        --arg path "$DATASET_PATH" \
        --arg region "$S3_REGION_FOR_BOTO" \
+       --arg endpoint "$S3_CREDENTIAL_ENDPOINT" \
+       --arg override_url "$S3_ENDPOINT" \
        --arg akid "$S3_ACCESS_KEY" \
        --arg ak "$S3_SECRET_KEY" \
        '{
@@ -145,6 +134,9 @@ if [[ -n "$S3_ACCESS_KEY" && -n "$S3_SECRET_KEY" ]]; then
          description: "Nebius Object Storage bucket",
          mode: "read-write",
          default_credential: {
+           endpoint: $endpoint,
+           region: $region,
+           override_url: $override_url,
            access_key_id: $akid,
            access_key: $ak
          }
@@ -163,7 +155,7 @@ fi
 
 # Fetch current dataset config so we can merge (preserve other buckets if any)
 CURRENT_DATASET="/tmp/osmo_dataset_current.json"
-if osmo_curl GET "http://localhost:8080/api/configs/dataset" 2>/dev/null | jq -r '.configs_dict // . | if type == "object" then . else empty end' > "${CURRENT_DATASET}" 2>/dev/null && [[ -s "${CURRENT_DATASET}" ]]; then
+if osmo_curl GET "${OSMO_URL}/api/configs/dataset" 2>/dev/null | jq -r '.configs_dict // . | if type == "object" then . else empty end' > "${CURRENT_DATASET}" 2>/dev/null && [[ -s "${CURRENT_DATASET}" ]]; then
     # Merge: add/overwrite our bucket and set default_bucket (users can omit bucket prefix)
     UPDATED_DATASET="/tmp/osmo_dataset_updated.json"
     jq --arg name "$DATASET_BUCKET_NAME" \
@@ -179,7 +171,7 @@ else
        > "${UPDATED_DATASET}"
 fi
 
-if osmo_config_update DATASET "${UPDATED_DATASET}" "Register Nebius bucket and set as default dataset bucket"; then
+if osmo_config_update DATASET "${UPDATED_DATASET}" "Register Nebius bucket and set as default dataset bucket" "${OSMO_API_PORT}"; then
     log_success "Dataset bucket configured and set as default"
 else
     log_error "Failed to configure dataset bucket"
@@ -194,7 +186,7 @@ rm -f "${BUCKET_JSON}" "${CURRENT_DATASET}" "${UPDATED_DATASET}"
 # -----------------------------------------------------------------------------
 log_info "Verifying..."
 echo ""
-osmo_curl GET "http://localhost:8080/api/configs/dataset" 2>/dev/null | jq '.configs_dict // .' || true
+osmo_curl GET "${OSMO_URL}/api/configs/dataset" 2>/dev/null | jq '.configs_dict // .' || true
 
 cleanup_port_forward
 trap - EXIT

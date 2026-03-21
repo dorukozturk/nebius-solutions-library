@@ -3,7 +3,7 @@
 # OSMO Installation Verification Script
 # =============================================================================
 # Checks that all required components are properly configured:
-#   1. GPU Operator running with driver enabled, version 580.95.05
+#   1. GPU Operator running with driver enabled, matching the configured driver.version
 #   2. /mnt/data mounted on all nodes
 #   3. 64Gi /dev/shm pod template configured in OSMO
 #   4. Redis sized correctly (8 vCPU, ~52.82Gi mem, 50Gi PVC)
@@ -17,7 +17,7 @@
 #   - jq installed
 #   - curl installed
 #   - OSMO CLI installed and accessible (for osmo login)
-#   - Port 8080 available locally (used for port-forward to OSMO service)
+#   - No fixed local port requirement; the script auto-selects a free port for OSMO port-forwarding
 #   - NEBIUS_REGION set (run: source ../000-prerequisites/nebius-env-init.sh)
 #
 # Usage:
@@ -27,7 +27,7 @@
 #   OSMO_URL                 OSMO API URL (default: http://localhost:8080)
 #   OSMO_NAMESPACE           Namespace where OSMO is deployed (default: osmo)
 #   GPU_OPERATOR_NAMESPACE   Namespace for GPU Operator (default: gpu-operator)
-#   EXPECTED_DRIVER_VERSION  Expected NVIDIA driver version (default: 580.95.05)
+#   EXPECTED_DRIVER_VERSION  Expected NVIDIA driver version override (default: use GPU Operator driver.version)
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
@@ -36,7 +36,7 @@ source "${SCRIPT_DIR}/defaults.sh"
 
 OSMO_URL="${OSMO_URL:-http://localhost:8080}"
 OSMO_NAMESPACE="${OSMO_NAMESPACE:-osmo}"
-EXPECTED_DRIVER_VERSION="${EXPECTED_DRIVER_VERSION:-580.95.05}"
+EXPECTED_DRIVER_VERSION="${EXPECTED_DRIVER_VERSION:-}"
 MIN_REDIS_CPU=8
 MIN_REDIS_MEMORY_GI=50
 MIN_REDIS_PVC_GI=50
@@ -97,14 +97,14 @@ fi
 
 if [[ "$PREREQ_OK" != "true" ]]; then
     log_error "Missing prerequisites. Fix the above and re-run."
-    return 2>/dev/null || true
+    return 1 2>/dev/null || exit 1
 fi
 
 # Verify kubectl can reach the cluster
 if ! kubectl cluster-info &>/dev/null; then
     log_error "kubectl cannot reach the cluster. Connect first:"
     echo "  nebius mk8s cluster get-credentials --id <cluster-id> --external"
-    return 2>/dev/null || true
+    return 1 2>/dev/null || exit 1
 fi
 
 CLUSTER_CONTEXT=$(kubectl config current-context 2>/dev/null || echo "unknown")
@@ -124,7 +124,14 @@ else
 fi
 
 # Check driver is enabled (not disabled via --set driver.enabled=false)
-DRIVER_ENABLED=$(helm get values gpu-operator -n "${GPU_OPERATOR_NAMESPACE:-gpu-operator}" -a -o json 2>/dev/null | jq -r '.driver.enabled // empty' || echo "unknown")
+GPU_OPERATOR_VALUES=$(helm get values gpu-operator -n "${GPU_OPERATOR_NAMESPACE:-gpu-operator}" -a -o json 2>/dev/null || echo '{}')
+DRIVER_ENABLED=$(echo "$GPU_OPERATOR_VALUES" | jq -r '.driver.enabled // empty' 2>/dev/null || echo "unknown")
+CONFIGURED_DRIVER_VERSION=$(echo "$GPU_OPERATOR_VALUES" | jq -r '.driver.version // empty' 2>/dev/null || echo "")
+
+if [[ -z "$EXPECTED_DRIVER_VERSION" && -n "$CONFIGURED_DRIVER_VERSION" ]]; then
+    EXPECTED_DRIVER_VERSION="$CONFIGURED_DRIVER_VERSION"
+fi
+
 if [[ "$DRIVER_ENABLED" == "true" ]]; then
     check_pass "GPU driver is enabled in GPU Operator"
 elif [[ "$DRIVER_ENABLED" == "false" ]]; then
@@ -149,8 +156,10 @@ else
 
     if [[ -z "$NVIDIA_SMI_OUTPUT" ]]; then
         check_fail "Could not run nvidia-smi in pod ${DRIVER_POD}"
-    elif [[ "$NVIDIA_SMI_OUTPUT" == "$EXPECTED_DRIVER_VERSION" ]]; then
+    elif [[ -n "$EXPECTED_DRIVER_VERSION" && "$NVIDIA_SMI_OUTPUT" == "$EXPECTED_DRIVER_VERSION" ]]; then
         check_pass "nvidia-smi driver version: ${NVIDIA_SMI_OUTPUT} (on ${DRIVER_NODE})"
+    elif [[ -z "$EXPECTED_DRIVER_VERSION" ]]; then
+        check_warn "nvidia-smi driver version: ${NVIDIA_SMI_OUTPUT} (no expected version configured)"
     else
         check_fail "nvidia-smi driver version: ${NVIDIA_SMI_OUTPUT} (expected ${EXPECTED_DRIVER_VERSION}, on ${DRIVER_NODE})"
     fi
@@ -224,42 +233,28 @@ echo ""
 log_info "--- Setting up OSMO API access ---"
 
 # Start port-forward for OSMO API checks
-start_osmo_port_forward "${OSMO_NAMESPACE}" 8080
+if ! start_osmo_api_session "${OSMO_NAMESPACE}" 8080 15; then
+    log_error "Skipping OSMO API checks (3–6). Ensure OSMO is running in namespace '${OSMO_NAMESPACE}'."
+    echo ""
+    echo "========================================"
+    echo "  Verification Summary (partial)"
+    echo "========================================"
+    echo ""
+    echo -e "  ${GREEN}Passed:   ${PASS}${NC}"
+    echo -e "  ${RED}Failed:   ${FAIL}${NC}"
+    echo -e "  ${YELLOW}Warnings: ${WARN}${NC}"
+    echo -e "  Skipped: checks 3–6 (OSMO API unreachable)"
+    echo ""
+    return 0 2>/dev/null || exit 0
+fi
+OSMO_URL="${OSMO_API_URL}"
 
 cleanup_port_forward() {
-    if [[ -n "${PORT_FORWARD_PID:-}" ]]; then
-        kill $PORT_FORWARD_PID 2>/dev/null || true
-        wait $PORT_FORWARD_PID 2>/dev/null || true
-    fi
+    stop_port_forward
 }
 trap cleanup_port_forward EXIT RETURN
 
-# Wait for port-forward
-max_wait=15
-elapsed=0
-while ! curl -s -o /dev/null -w "%{http_code}" "${OSMO_URL}/api/version" 2>/dev/null | grep -q "200\|401\|403"; do
-    sleep 1
-    ((elapsed += 1))
-    if [[ $elapsed -ge $max_wait ]]; then
-        log_error "Port-forward failed to start within ${max_wait}s"
-        log_error "Skipping OSMO API checks (3–6). Ensure OSMO is running in namespace '${OSMO_NAMESPACE}'."
-        cleanup_port_forward
-        # Print partial summary and return
-        echo ""
-        echo "========================================"
-        echo "  Verification Summary (partial)"
-        echo "========================================"
-        echo ""
-        echo -e "  ${GREEN}Passed:   ${PASS}${NC}"
-        echo -e "  ${RED}Failed:   ${FAIL}${NC}"
-        echo -e "  ${YELLOW}Warnings: ${WARN}${NC}"
-        echo -e "  Skipped: checks 3–6 (OSMO API unreachable)"
-        echo ""
-        return 2>/dev/null || true
-    fi
-done
-
-osmo_login 8080 || true
+osmo_login "${OSMO_API_PORT}" || true
 
 # =============================================================================
 # Check 3: Shared memory pod template (64Gi /dev/shm)

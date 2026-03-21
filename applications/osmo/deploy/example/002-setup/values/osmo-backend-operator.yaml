@@ -2,8 +2,8 @@
 # https://nvidia.github.io/OSMO/main/deployment_guide/install_backend/deploy_backend.html
 
 global:
-  # REQUIRED: OSMO image tag (e.g., 6.0.0)
-  osmoImageTag: "6.0.0"
+  # REQUIRED: OSMO image tag. Match the backend-operator chart appVersion.
+  osmoImageTag: "6.2"
   
   # REQUIRED: Your OSMO service URL
   serviceUrl: "https://osmo.example.com"
@@ -15,23 +15,26 @@ global:
   # REQUIRED: Unique name for this backend
   backendName: "nebius-backend"
   
-  # Authentication
-  accountTokenSecret: "osmo-operator-token"
-  loginMethod: "token"
+  # Authentication for Keycloak-enabled installs.
+  # Use a local automation user, e.g. osmo-admin / osmo-admin or a dedicated break-glass user.
+  accountUsername: "osmo-admin"
+  accountPasswordSecret: "osmo-operator-password"
+  accountPasswordSecretKey: "password"
+  loginMethod: "password"
 
-  # Resource configuration
-  services:
-    backendListener:
-      resources:
-        requests:
-          cpu: "1"
-          memory: "1Gi"
-        limits:
-          memory: "1Gi"
-    backendWorker:
-      resources:
-        requests:
-          cpu: "1"
-          memory: "1Gi"
-        limits:
-          memory: "1Gi"
+# Resource configuration
+services:
+  backendListener:
+    resources:
+      requests:
+        cpu: "1"
+        memory: "1Gi"
+      limits:
+        memory: "1Gi"
+  backendWorker:
+    resources:
+      requests:
+        cpu: "1"
+        memory: "1Gi"
+      limits:
+        memory: "1Gi"

@@ -82,6 +82,303 @@ check_command() {
     command -v "$1" &>/dev/null
 }
 
+kubectl_real() {
+    local kubectl_bin
+    kubectl_bin=$(type -P kubectl 2>/dev/null || true)
+    if [[ -z "$kubectl_bin" ]]; then
+        echo "kubectl binary not found" >&2
+        return 127
+    fi
+    "$kubectl_bin" "$@"
+}
+
+# Shared kubectl wrapper for setup scripts.
+# For `kubectl apply`, disable schema validation and capture stdin-backed
+# manifests to a temp file so retries survive transient IAM / OpenAPI failures.
+kubectl() {
+    if [[ "${1:-}" != "apply" ]]; then
+        kubectl_real "$@"
+        return $?
+    fi
+
+    shift
+    local args=()
+    local tmp_file=""
+    local captured_stdin=false
+
+    while [[ $# -gt 0 ]]; do
+        if [[ "$1" == "-f" && "${2:-}" == "-" ]]; then
+            if [[ "$captured_stdin" == "false" ]]; then
+                tmp_file=$(mktemp "/tmp/kubectl-apply.XXXXXX.yaml")
+                cat >"$tmp_file"
+                captured_stdin=true
+            fi
+            args+=("-f" "$tmp_file")
+            shift 2
+            continue
+        fi
+        args+=("$1")
+        shift
+    done
+
+    if [[ "$captured_stdin" == "true" ]]; then
+        retry_with_backoff 3 2 10 kubectl_real apply --validate=false "${args[@]}"
+    else
+        retry_with_backoff 3 2 10 kubectl_real apply --validate=false "${args[@]}"
+    fi
+    local rc=$?
+
+    if [[ -n "$tmp_file" ]]; then
+        rm -f "$tmp_file" 2>/dev/null || true
+    fi
+
+    return $rc
+}
+
+# Check whether a local TCP port is already listening.
+is_local_port_in_use() {
+    local port="$1"
+
+    if check_command lsof; then
+        lsof -nP -iTCP:"$port" -sTCP:LISTEN &>/dev/null
+    elif check_command ss; then
+        ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]${port}$"
+    elif check_command netstat; then
+        netstat -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]${port}$"
+    else
+        return 1
+    fi
+}
+
+# Track script-owned port-forwards so a later rerun can clean them up and
+# reclaim the preferred local port.
+port_forward_state_file() {
+    local port="$1"
+    echo "/tmp/osmo-port-forward.${port}.state"
+}
+
+write_port_forward_state() {
+    local port="$1"
+    local pf_pid="$2"
+    local log_file="$3"
+    local ns="$4"
+    local resource="$5"
+    local remote_port="$6"
+    local description="$7"
+    local state_file
+
+    state_file=$(port_forward_state_file "$port")
+    cat >"$state_file" <<EOF
+pid=${pf_pid}
+log=${log_file}
+namespace=${ns}
+resource=${resource}
+remote_port=${remote_port}
+description=${description}
+EOF
+}
+
+remove_port_forward_state() {
+    local pf_pid="${1:-}"
+    local log_file="${2:-}"
+    local local_port="${3:-}"
+    local state_file
+    local state_pid
+    local state_log
+
+    if [[ -n "$local_port" ]]; then
+        rm -f "$(port_forward_state_file "$local_port")" 2>/dev/null || true
+        return 0
+    fi
+
+    for state_file in /tmp/osmo-port-forward.*.state; do
+        [[ -e "$state_file" ]] || break
+        state_pid=$(awk -F= '$1=="pid" {print substr($0, index($0, "=") + 1); exit}' "$state_file" 2>/dev/null)
+        state_log=$(awk -F= '$1=="log" {print substr($0, index($0, "=") + 1); exit}' "$state_file" 2>/dev/null)
+        if [[ -n "$pf_pid" && "$state_pid" == "$pf_pid" ]]; then
+            rm -f "$state_file" 2>/dev/null || true
+            break
+        fi
+        if [[ -n "$log_file" && "$state_log" == "$log_file" ]]; then
+            rm -f "$state_file" 2>/dev/null || true
+            break
+        fi
+    done
+}
+
+cleanup_script_owned_port_forward() {
+    local local_port="$1"
+    local state_file
+    local pf_pid
+    local log_file
+    local description
+    local cmd
+
+    state_file=$(port_forward_state_file "$local_port")
+    [[ -f "$state_file" ]] || return 1
+
+    pf_pid=$(awk -F= '$1=="pid" {print substr($0, index($0, "=") + 1); exit}' "$state_file" 2>/dev/null)
+    log_file=$(awk -F= '$1=="log" {print substr($0, index($0, "=") + 1); exit}' "$state_file" 2>/dev/null)
+    description=$(awk -F= '$1=="description" {print substr($0, index($0, "=") + 1); exit}' "$state_file" 2>/dev/null)
+
+    if [[ -z "$pf_pid" ]]; then
+        rm -f "$state_file" 2>/dev/null || true
+        return 1
+    fi
+
+    if ! kill -0 "$pf_pid" 2>/dev/null; then
+        stop_port_forward "$pf_pid" "$log_file" "$local_port"
+        return 0
+    fi
+
+    cmd=$(ps -p "$pf_pid" -o command= 2>/dev/null || true)
+    if [[ "$cmd" != *"kubectl port-forward"* ]]; then
+        rm -f "$state_file" 2>/dev/null || true
+        return 1
+    fi
+
+    log_warning "Cleaning up stale script-owned port-forward on local port ${local_port}${description:+ (${description})}..."
+    stop_port_forward "$pf_pid" "$log_file" "$local_port"
+    sleep 1
+    return 0
+}
+
+# Show the tail of a captured kubectl port-forward log.
+show_port_forward_log() {
+    local log_file="$1"
+    [[ -f "$log_file" ]] || return 0
+    tail -n 20 "$log_file" 2>/dev/null | sed 's/^/  /'
+}
+
+# Start a kubectl port-forward on the first available local port.
+# Sets PORT_FORWARD_PID, PORT_FORWARD_PORT, and PORT_FORWARD_LOG.
+start_kubectl_port_forward() {
+    local ns="$1"
+    local resource="$2"
+    local remote_port="$3"
+    local preferred_local_port="${4:-8080}"
+    local description="${5:-${resource}:${remote_port}}"
+    local max_port_tries="${6:-20}"
+    local log_file
+    local local_port
+    local pf_pid
+    local attempt
+
+    log_file=$(mktemp "/tmp/osmo-port-forward.XXXXXX")
+
+    for attempt in $(seq 0 "$max_port_tries"); do
+        local_port=$((preferred_local_port + attempt))
+
+        if is_local_port_in_use "$local_port"; then
+            cleanup_script_owned_port_forward "$local_port" >/dev/null 2>&1 || true
+        fi
+
+        if is_local_port_in_use "$local_port"; then
+            if [[ "$attempt" -eq 0 ]]; then
+                log_warning "Local port ${local_port} is already in use; trying another port for ${description}..."
+            fi
+            continue
+        fi
+
+        kubectl port-forward -n "$ns" "$resource" "${local_port}:${remote_port}" >"$log_file" 2>&1 &
+        pf_pid=$!
+        sleep 1
+
+        if kill -0 "$pf_pid" 2>/dev/null; then
+            PORT_FORWARD_PID=$pf_pid
+            PORT_FORWARD_PORT=$local_port
+            PORT_FORWARD_LOG=$log_file
+            export PORT_FORWARD_PID PORT_FORWARD_PORT PORT_FORWARD_LOG
+            write_port_forward_state "$local_port" "$pf_pid" "$log_file" "$ns" "$resource" "$remote_port" "$description"
+
+            if [[ "$local_port" != "$preferred_local_port" ]]; then
+                log_warning "Using local port ${local_port} for ${description} (preferred port ${preferred_local_port} was unavailable)"
+            fi
+            return 0
+        fi
+
+        wait "$pf_pid" 2>/dev/null || true
+        if grep -qiE 'address already in use|bind:.*in use|unable to listen on port' "$log_file" 2>/dev/null; then
+            if [[ "$attempt" -eq 0 ]]; then
+                log_warning "kubectl could not bind local port ${local_port}; trying another port for ${description}..."
+            fi
+            continue
+        fi
+
+        log_error "Failed to start port-forward for ${description}"
+        show_port_forward_log "$log_file"
+        rm -f "$log_file" 2>/dev/null || true
+        return 1
+    done
+
+    log_error "Could not find an available local port for ${description} starting at ${preferred_local_port}"
+    rm -f "$log_file" 2>/dev/null || true
+    return 1
+}
+
+# Stop a kubectl port-forward and clean up its log file.
+stop_port_forward() {
+    local pf_pid="${1:-${PORT_FORWARD_PID:-}}"
+    local log_file="${2:-${PORT_FORWARD_LOG:-}}"
+    local local_port="${3:-${PORT_FORWARD_PORT:-}}"
+
+    if [[ -n "$pf_pid" ]]; then
+        kill "$pf_pid" 2>/dev/null || true
+        wait "$pf_pid" 2>/dev/null || true
+    fi
+
+    if [[ -n "$log_file" ]]; then
+        rm -f "$log_file" 2>/dev/null || true
+    fi
+
+    remove_port_forward_state "$pf_pid" "$log_file" "$local_port"
+}
+
+# Return the HTTP status for a URL with bounded timeouts.
+http_status() {
+    local url="$1"
+
+    curl -sS \
+        --connect-timeout "${OSMO_CURL_CONNECT_TIMEOUT:-5}" \
+        --max-time "${OSMO_READY_CURL_MAX_TIME:-5}" \
+        -o /dev/null \
+        -w "%{http_code}" \
+        "$url" 2>/dev/null || echo "000"
+}
+
+# Wait for an HTTP endpoint to return a ready status code.
+wait_for_http_ready() {
+    local url="$1"
+    local timeout="${2:-30}"
+    local description="${3:-$url}"
+    local elapsed=0
+    local status="000"
+
+    while [[ "$elapsed" -lt "$timeout" ]]; do
+        status=$(http_status "$url")
+        if [[ "$status" =~ ^(200|401|403)$ ]]; then
+            return 0
+        fi
+
+        if [[ -n "${PORT_FORWARD_PID:-}" ]]; then
+            if ! kill -0 "${PORT_FORWARD_PID}" 2>/dev/null; then
+                log_error "Port-forward exited while waiting for ${description}"
+                show_port_forward_log "${PORT_FORWARD_LOG:-}"
+                return 1
+            fi
+        fi
+
+        sleep 1
+        ((elapsed += 1))
+    done
+
+    log_error "Timed out waiting for ${description} (last HTTP status: ${status})"
+    if [[ -n "${PORT_FORWARD_LOG:-}" ]]; then
+        show_port_forward_log "${PORT_FORWARD_LOG}"
+    fi
+    return 1
+}
+
 # Retry with exponential backoff
 retry_with_backoff() {
     local max_attempts=${1:-5}
@@ -145,7 +442,7 @@ check_kubectl() {
         return 1
     fi
 
-    if ! kubectl cluster-info &>/dev/null; then
+    if ! retry_with_backoff 3 2 10 kubectl cluster-info &>/dev/null; then
         log_error "Cannot connect to Kubernetes cluster"
         return 1
     fi
@@ -366,15 +663,39 @@ start_osmo_port_forward() {
         pod_name=$(kubectl get pod -n "$ns" -l app=osmo-service --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
         [[ -z "$pod_name" ]] && pod_name=$(kubectl get pod -n "$ns" -l app=osmo-service -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
         log_info "Envoy sidecar detected -- port-forwarding to pod/${pod_name}:8000 (bypassing auth)..."
-        kubectl port-forward -n "$ns" "pod/${pod_name}" "${local_port}:8000" &>/dev/null &
+        start_kubectl_port_forward "$ns" "pod/${pod_name}" 8000 "$local_port" "OSMO API pod/${pod_name}:8000" || return 1
         _OSMO_AUTH_BYPASS=true
     else
         log_info "No Envoy sidecar -- port-forwarding to svc/osmo-service:80..."
-        kubectl port-forward -n "$ns" svc/osmo-service "${local_port}:80" &>/dev/null &
+        start_kubectl_port_forward "$ns" svc/osmo-service 80 "$local_port" "OSMO API svc/osmo-service:80" || return 1
         _OSMO_AUTH_BYPASS=false
     fi
-    PORT_FORWARD_PID=$!
     export _OSMO_AUTH_BYPASS
+}
+
+# Wait for the forwarded OSMO API to respond.
+wait_for_osmo_api() {
+    local port="${1:-${PORT_FORWARD_PORT:-8080}}"
+    local timeout="${2:-30}"
+    wait_for_http_ready "http://localhost:${port}/api/version" "$timeout" "OSMO API"
+}
+
+# Start a port-forward and wait until the OSMO API responds.
+# Sets OSMO_API_PORT and OSMO_API_URL.
+start_osmo_api_session() {
+    local ns="${1:-osmo}"
+    local preferred_local_port="${2:-8080}"
+    local timeout="${3:-30}"
+
+    start_osmo_port_forward "$ns" "$preferred_local_port" || return 1
+    wait_for_osmo_api "${PORT_FORWARD_PORT}" "$timeout" || {
+        stop_port_forward
+        return 1
+    }
+
+    OSMO_API_PORT="${PORT_FORWARD_PORT}"
+    OSMO_API_URL="http://localhost:${OSMO_API_PORT}"
+    export OSMO_API_PORT OSMO_API_URL
 }
 
 # Make an authenticated curl call to the OSMO API.
@@ -392,7 +713,10 @@ osmo_curl() {
         auth_args+=(-H "x-osmo-user: osmo-admin" -H "x-osmo-roles: osmo-admin,osmo-user")
     fi
 
-    curl -s -X "$method" "$url" \
+    curl -sS \
+        --connect-timeout "${OSMO_CURL_CONNECT_TIMEOUT:-5}" \
+        --max-time "${OSMO_CURL_MAX_TIME:-120}" \
+        -X "$method" "$url" \
         -H "Content-Type: application/json" \
         "${auth_args[@]}" \
         "$@"

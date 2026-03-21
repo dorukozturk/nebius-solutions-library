@@ -681,27 +681,23 @@ fi  # end TLS_MODE
 if [[ "$OSMO_DEPLOYED" == "true" ]]; then
     log_info "Updating OSMO service_base_url to https://${MAIN_HOSTNAME}..."
 
-    start_osmo_port_forward "${OSMO_NS}" 8080
-    _PF_PID=$PORT_FORWARD_PID
-    trap 'kill $_PF_PID 2>/dev/null; wait $_PF_PID 2>/dev/null' EXIT
+    _PF_PID=""
+    _PF_LOG=""
+    cleanup_tls_pf() {
+        stop_port_forward "${_PF_PID:-}" "${_PF_LOG:-}"
+    }
+    trap cleanup_tls_pf EXIT
 
-    _pf_ready=false
-    for i in $(seq 1 15); do
-        if curl -s -o /dev/null -w "%{http_code}" "http://localhost:8080/api/version" 2>/dev/null | grep -q "200\|401\|403"; then
-            _pf_ready=true
-            break
-        fi
-        sleep 1
-    done
-
-    if [[ "$_pf_ready" == "true" ]]; then
+    if start_osmo_api_session "${OSMO_NS}" 8080 15; then
+        _PF_PID=$PORT_FORWARD_PID
+        _PF_LOG=$PORT_FORWARD_LOG
         cat > /tmp/service_url_tls.json <<SVCEOF
 {
   "service_base_url": "https://${MAIN_HOSTNAME}"
 }
 SVCEOF
-        if osmo_config_update SERVICE /tmp/service_url_tls.json "Enable HTTPS" 8080; then
-            NEW_URL=$(osmo_curl GET "http://localhost:8080/api/configs/service" 2>/dev/null | jq -r '.service_base_url // ""')
+        if osmo_config_update SERVICE /tmp/service_url_tls.json "Enable HTTPS" "${OSMO_API_PORT}"; then
+            NEW_URL=$(osmo_curl GET "${OSMO_API_URL}/api/configs/service" 2>/dev/null | jq -r '.service_base_url // ""')
             log_success "service_base_url updated to: ${NEW_URL}"
         else
             log_warning "Could not update service_base_url automatically."
