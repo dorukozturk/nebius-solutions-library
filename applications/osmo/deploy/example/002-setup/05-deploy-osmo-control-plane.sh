@@ -154,6 +154,7 @@ else
 fi
 
 S3_NEBIUS_ENDPOINT="https://storage.${NEBIUS_SELECTED_REGION}.nebius.cloud"
+S3_NEBIUS_ENDPOINT_HTTPS=$(normalize_nebius_storage_endpoint "${S3_NEBIUS_ENDPOINT}")
 
 # -----------------------------------------------------------------------------
 # Get Storage Configuration
@@ -163,6 +164,7 @@ log_info "Retrieving storage configuration..."
 S3_BUCKET=$(get_tf_output "storage_bucket.name" "../001-iac" || echo "")
 S3_ENDPOINT=$(get_tf_output "storage_bucket.endpoint" "../001-iac" || echo "${S3_NEBIUS_ENDPOINT}")
 S3_ACCESS_KEY=$(get_tf_output "storage_credentials.access_key_id" "../001-iac" || echo "")
+S3_ENDPOINT=$(normalize_nebius_storage_endpoint "${S3_ENDPOINT}")
 
 # Secret access key is stored in MysteryBox (ephemeral, not in Terraform state)
 S3_SECRET_REF_ID=$(get_tf_output "storage_secret_reference_id" "../001-iac" || echo "")
@@ -425,14 +427,13 @@ if [[ "${DEPLOY_KEYCLOAK:-false}" == "true" ]]; then
         --dry-run=client -o yaml | kubectl apply -f -
 fi
 
-# Storage secret (if available)
-if [[ -n "$S3_ACCESS_KEY" && -n "$S3_SECRET_KEY" ]]; then
-    kubectl create secret generic osmo-storage \
-        --namespace "${OSMO_NAMESPACE}" \
-        --from-literal=access-key-id="${S3_ACCESS_KEY}" \
-        --from-literal=secret-access-key="${S3_SECRET_KEY}" \
-        --dry-run=client -o yaml | kubectl apply -f -
+# Storage secret (required for workflow artifact uploads on Nebius)
+if [[ -z "$S3_ACCESS_KEY" || -z "$S3_SECRET_KEY" ]]; then
+    log_error "Storage credentials are required but could not be retrieved from Terraform / MysteryBox"
+    exit 1
 fi
+
+sync_osmo_storage_secret "${OSMO_NAMESPACE}" "${SCRIPT_DIR}/../001-iac" || exit 1
 
 # MEK (Master Encryption Key) Configuration
 # OSMO expects MEK in JWK (JSON Web Key) format, base64-encoded
@@ -1756,11 +1757,23 @@ fi)
         value: "false"
       # S3-compatible storage endpoint (Nebius Object Storage)
       - name: AWS_ENDPOINT_URL_S3
-        value: ${S3_NEBIUS_ENDPOINT}:443
+        value: ${S3_NEBIUS_ENDPOINT_HTTPS}
       - name: AWS_S3_FORCE_PATH_STYLE
         value: "true"
       - name: AWS_DEFAULT_REGION
         value: ${NEBIUS_SELECTED_REGION}
+      - name: AWS_ACCESS_KEY_ID
+        valueFrom:
+          secretKeyRef:
+            name: osmo-storage
+            key: access-key-id
+      - name: AWS_SECRET_ACCESS_KEY
+        valueFrom:
+          secretKeyRef:
+            name: osmo-storage
+            key: secret-access-key
+      - name: AWS_EC2_METADATA_DISABLED
+        value: "true"
       - name: OSMO_SKIP_DATA_AUTH
         value: "1"
     # MEK volume mount
@@ -1797,11 +1810,23 @@ fi)
         value: "false"
       # S3-compatible storage endpoint (Nebius Object Storage)
       - name: AWS_ENDPOINT_URL_S3
-        value: ${S3_NEBIUS_ENDPOINT}:443
+        value: ${S3_NEBIUS_ENDPOINT_HTTPS}
       - name: AWS_S3_FORCE_PATH_STYLE
         value: "true"
       - name: AWS_DEFAULT_REGION
         value: ${NEBIUS_SELECTED_REGION}
+      - name: AWS_ACCESS_KEY_ID
+        valueFrom:
+          secretKeyRef:
+            name: osmo-storage
+            key: access-key-id
+      - name: AWS_SECRET_ACCESS_KEY
+        valueFrom:
+          secretKeyRef:
+            name: osmo-storage
+            key: secret-access-key
+      - name: AWS_EC2_METADATA_DISABLED
+        value: "true"
     extraVolumes:
       - name: vault-secrets
         secret:
@@ -1833,6 +1858,24 @@ fi)
       # Disable built-in OTEL metrics exporter (no collector at localhost:12345)
       - name: METRICS_OTEL_ENABLE
         value: "false"
+      - name: AWS_ENDPOINT_URL_S3
+        value: ${S3_NEBIUS_ENDPOINT_HTTPS}
+      - name: AWS_S3_FORCE_PATH_STYLE
+        value: "true"
+      - name: AWS_DEFAULT_REGION
+        value: ${NEBIUS_SELECTED_REGION}
+      - name: AWS_ACCESS_KEY_ID
+        valueFrom:
+          secretKeyRef:
+            name: osmo-storage
+            key: access-key-id
+      - name: AWS_SECRET_ACCESS_KEY
+        valueFrom:
+          secretKeyRef:
+            name: osmo-storage
+            key: secret-access-key
+      - name: AWS_EC2_METADATA_DISABLED
+        value: "true"
     extraVolumes:
       - name: vault-secrets
         secret:
@@ -1864,6 +1907,24 @@ fi)
       # Disable built-in OTEL metrics exporter (no collector at localhost:12345)
       - name: METRICS_OTEL_ENABLE
         value: "false"
+      - name: AWS_ENDPOINT_URL_S3
+        value: ${S3_NEBIUS_ENDPOINT_HTTPS}
+      - name: AWS_S3_FORCE_PATH_STYLE
+        value: "true"
+      - name: AWS_DEFAULT_REGION
+        value: ${NEBIUS_SELECTED_REGION}
+      - name: AWS_ACCESS_KEY_ID
+        valueFrom:
+          secretKeyRef:
+            name: osmo-storage
+            key: access-key-id
+      - name: AWS_SECRET_ACCESS_KEY
+        valueFrom:
+          secretKeyRef:
+            name: osmo-storage
+            key: secret-access-key
+      - name: AWS_EC2_METADATA_DISABLED
+        value: "true"
     extraVolumes:
       - name: vault-secrets
         secret:

@@ -49,6 +49,7 @@ S3_ENDPOINT=$(get_tf_output "storage_bucket.endpoint" "../001-iac" 2>/dev/null |
 if [[ -z "$S3_ENDPOINT" ]]; then
     S3_ENDPOINT="https://storage.${REGION}.nebius.cloud"
 fi
+S3_ENDPOINT=$(normalize_nebius_storage_endpoint "${S3_ENDPOINT}")
 
 if [[ -z "$S3_BUCKET" ]]; then
     log_error "Could not retrieve storage bucket name from Terraform"
@@ -67,11 +68,15 @@ S3_CREDENTIAL_ENDPOINT="s3://${S3_BUCKET}"
 # -----------------------------------------------------------------------------
 log_info "Retrieving storage credentials for default_credential..."
 
-S3_ACCESS_KEY=$(get_tf_output "storage_credentials.access_key_id" "../001-iac" 2>/dev/null || echo "")
-S3_SECRET_KEY=$(kubectl get secret osmo-storage -n "${OSMO_NAMESPACE:-osmo}" -o jsonpath='{.data.secret-access-key}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
+S3_ACCESS_KEY=$(get_kubernetes_secret_value "${OSMO_NAMESPACE:-osmo}" osmo-storage access-key-id 2>/dev/null || echo "")
+S3_SECRET_KEY=$(get_kubernetes_secret_value "${OSMO_NAMESPACE:-osmo}" osmo-storage secret-access-key 2>/dev/null || echo "")
 
 if [[ -z "$S3_ACCESS_KEY" ]]; then
-    log_warning "Could not get access key from Terraform; bucket will have no default_credential"
+    S3_ACCESS_KEY=$(get_tf_output "storage_credentials.access_key_id" "../001-iac" 2>/dev/null || echo "")
+fi
+
+if [[ -z "$S3_ACCESS_KEY" ]]; then
+    log_warning "Could not get access key from osmo-storage or Terraform; bucket will have no default_credential"
 fi
 if [[ -z "$S3_SECRET_KEY" ]]; then
     S3_SECRET_REF_ID=$(get_tf_output "storage_secret_reference_id" "../001-iac" 2>/dev/null || echo "")

@@ -19,6 +19,8 @@ echo ""
 # Check prerequisites
 check_kubectl || exit 1
 
+OSMO_NS="${OSMO_NAMESPACE:-osmo}"
+
 # -----------------------------------------------------------------------------
 # Get Storage Configuration from Terraform
 # -----------------------------------------------------------------------------
@@ -37,6 +39,7 @@ fi
 if [[ -z "$S3_ENDPOINT" ]]; then
     S3_ENDPOINT="https://storage.${NEBIUS_REGION}.nebius.cloud"
 fi
+S3_ENDPOINT=$(normalize_nebius_storage_endpoint "${S3_ENDPOINT}")
 
 if [[ -z "$S3_BUCKET" ]]; then
     log_error "Could not retrieve storage bucket name from Terraform"
@@ -50,54 +53,28 @@ log_success "Storage bucket: ${S3_BUCKET}"
 log_success "Storage endpoint: ${S3_ENDPOINT}"
 
 # -----------------------------------------------------------------------------
-# Check/Create osmo-storage secret
+# Sync osmo-storage secret and verify direct bucket access
 # -----------------------------------------------------------------------------
-log_info "Checking for osmo-storage secret..."
+log_info "Syncing osmo-storage secret..."
 
-if ! kubectl get secret osmo-storage -n osmo &>/dev/null; then
-    log_warning "osmo-storage secret not found - attempting to create from MysteryBox..."
-    
-    # Get credentials from Terraform/MysteryBox
-    S3_ACCESS_KEY=$(get_tf_output "storage_credentials.access_key_id" "../001-iac" 2>/dev/null || echo "")
-    S3_SECRET_REF_ID=$(get_tf_output "storage_secret_reference_id" "../001-iac" 2>/dev/null || echo "")
-    S3_SECRET_KEY=""
-    
-    if [[ -n "$S3_SECRET_REF_ID" ]]; then
-        log_info "Retrieving storage secret from MysteryBox..."
-        # IAM access key secrets are stored with key "secret" in MysteryBox
-        S3_SECRET_KEY=$(get_mysterybox_secret "$S3_SECRET_REF_ID" "secret" 2>/dev/null || echo "")
-    fi
-    
-    if [[ -z "$S3_ACCESS_KEY" || -z "$S3_SECRET_KEY" ]]; then
-        log_error "Could not retrieve storage credentials"
-        echo ""
-        echo "Either re-run 04-deploy-osmo-control-plane.sh or create the secret manually:"
-        echo ""
-        echo "  kubectl create secret generic osmo-storage \\"
-        echo "    --namespace osmo \\"
-        echo "    --from-literal=access-key-id=<your-access-key> \\"
-        echo "    --from-literal=secret-access-key=<your-secret-key>"
-        exit 1
-    fi
-    
-    # Create the secret
-    kubectl create secret generic osmo-storage \
-        --namespace osmo \
-        --from-literal=access-key-id="${S3_ACCESS_KEY}" \
-        --from-literal=secret-access-key="${S3_SECRET_KEY}" \
-        --dry-run=client -o yaml | kubectl apply -f -
-    
-    log_success "osmo-storage secret created"
+if ! sync_osmo_storage_secret "${OSMO_NS}" "${SCRIPT_DIR}/../001-iac"; then
+    echo ""
+    echo "Re-run 05-deploy-osmo-control-plane.sh if Terraform / MysteryBox outputs are unavailable."
+    exit 1
+fi
+
+log_info "Probing Nebius Object Storage with osmo-storage credentials..."
+if probe_nebius_bucket_rw "${OSMO_NS}" "${S3_BUCKET}" "${S3_ENDPOINT}" "${NEBIUS_REGION}"; then
+    log_success "Object Storage probe passed"
 else
-    log_success "osmo-storage secret exists"
+    log_error "Object Storage probe failed with the current osmo-storage credentials"
+    exit 1
 fi
 
 # -----------------------------------------------------------------------------
 # Start port-forward and configure storage
 # -----------------------------------------------------------------------------
 log_info "Starting port-forward to OSMO service..."
-
-OSMO_NS="${OSMO_NAMESPACE:-osmo}"
 
 if ! start_osmo_api_session "${OSMO_NS}" 8080 60; then
     log_error "Port-forward failed to start within 60s"
@@ -118,64 +95,58 @@ log_success "Port-forward ready at ${OSMO_URL}"
 osmo_login "${OSMO_API_PORT}" || exit 1
 
 # -----------------------------------------------------------------------------
-# Get Storage Credentials
+# Ensure storage-capable deployments are wired to use osmo-storage
 # -----------------------------------------------------------------------------
-log_info "Retrieving storage credentials..."
+log_info "Checking deployment AWS credential wiring..."
 
-# Get access key from Terraform
-S3_ACCESS_KEY=$(get_tf_output "storage_credentials.access_key_id" "../001-iac" 2>/dev/null || echo "")
+for deploy in osmo-service osmo-worker; do
+    if ! kubectl get deployment "$deploy" -n "${OSMO_NS}" -o json 2>/dev/null | \
+        jq -e '
+            .spec.template.spec.containers[]
+            | select(.name == "'"${deploy}"'")
+            | [.env[]? | .name]
+            | index("AWS_ACCESS_KEY_ID") and index("AWS_SECRET_ACCESS_KEY")
+        ' >/dev/null; then
+        log_error "${deploy} is missing AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY from osmo-storage. Re-run 05-deploy-osmo-control-plane.sh first."
+        exit 1
+    fi
+done
 
-# Get secret key from osmo-storage secret (already created)
-S3_SECRET_KEY=$(kubectl get secret osmo-storage -n osmo -o jsonpath='{.data.secret-access-key}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
-
-if [[ -z "$S3_ACCESS_KEY" || -z "$S3_SECRET_KEY" ]]; then
-    log_error "Could not retrieve storage credentials"
-    exit 1
-fi
-
-# Nebius Object Storage uses an S3-compatible API.
-# For OSMO workflow storage, use the S3 credential schema explicitly:
-#   endpoint     = s3://<bucket>
-#   override_url = https://storage.<region>.nebius.cloud
-#   region       = <region>
-# This matches the dataset-bucket configuration and avoids the stale
-# `tos://...` workflow storage format that led to runtime "Invalid region"
-# errors during UploadWorkflowFiles.
+# Nebius Object Storage uses an S3-compatible API. The workflow config should
+# define the bucket and HTTPS endpoint. This OSMO build still validates
+# workflow_data/workflow_log against a schema that requires inline access keys,
+# so keep those fields populated from osmo-storage even though 05 also injects
+# AWS_* env vars into the pods.
 BACKEND_URI="s3://${S3_BUCKET}"
 OVERRIDE_URL="${S3_ENDPOINT}"
 REGION="${NEBIUS_REGION}"
+S3_ACCESS_KEY=$(get_kubernetes_secret_value "${OSMO_NS}" osmo-storage "access-key-id")
+S3_SECRET_KEY=$(get_kubernetes_secret_value "${OSMO_NS}" osmo-storage "secret-access-key")
 
-log_success "Storage credentials retrieved"
+if [[ -z "${S3_ACCESS_KEY}" || -z "${S3_SECRET_KEY}" ]]; then
+    log_error "osmo-storage secret is missing access-key-id or secret-access-key"
+    exit 1
+fi
+
+WORKFLOW_STORAGE_VALUE=$(jq -cn \
+    --arg endpoint "${BACKEND_URI}" \
+    --arg override_url "${OVERRIDE_URL}" \
+    --arg access_key_id "${S3_ACCESS_KEY}" \
+    --arg access_key "${S3_SECRET_KEY}" \
+    --arg region "${REGION}" \
+    '{credential: {endpoint: $endpoint, override_url: $override_url, access_key_id: $access_key_id, access_key: $access_key, region: $region}}')
+
+log_success "Deployment AWS credential wiring verified"
 
 # -----------------------------------------------------------------------------
 # Configure Workflow Log Storage in OSMO
 # -----------------------------------------------------------------------------
 log_info "Configuring workflow log storage..."
 
-# Create workflow log config JSON
-WORKFLOW_LOG_CONFIG=$(cat <<EOF
-{
-  "workflow_log": {
-    "credential": {
-      "endpoint": "${BACKEND_URI}",
-      "override_url": "${OVERRIDE_URL}",
-      "access_key_id": "${S3_ACCESS_KEY}",
-      "access_key": "${S3_SECRET_KEY}",
-      "region": "${REGION}"
-    }
-  }
-}
-EOF
-)
-
-# Write to temp file for osmo CLI
-echo "$WORKFLOW_LOG_CONFIG" > /tmp/workflow_log_config.json
-
-if osmo_config_update WORKFLOW /tmp/workflow_log_config.json "Configure workflow log storage" "${OSMO_API_PORT}"; then
+if upsert_osmo_config_value_db "${OSMO_NS}" WORKFLOW workflow_log "${WORKFLOW_STORAGE_VALUE}"; then
     log_success "Workflow log storage configured"
 else
     log_error "Failed to configure workflow log storage"
-    rm -f /tmp/workflow_log_config.json
     exit 1
 fi
 
@@ -184,35 +155,12 @@ fi
 # -----------------------------------------------------------------------------
 log_info "Configuring workflow data storage..."
 
-# Create workflow data config JSON
-WORKFLOW_DATA_CONFIG=$(cat <<EOF
-{
-  "workflow_data": {
-    "credential": {
-      "endpoint": "${BACKEND_URI}",
-      "override_url": "${OVERRIDE_URL}",
-      "access_key_id": "${S3_ACCESS_KEY}",
-      "access_key": "${S3_SECRET_KEY}",
-      "region": "${REGION}"
-    }
-  }
-}
-EOF
-)
-
-# Write to temp file for osmo CLI
-echo "$WORKFLOW_DATA_CONFIG" > /tmp/workflow_data_config.json
-
-if osmo_config_update WORKFLOW /tmp/workflow_data_config.json "Configure workflow data storage" "${OSMO_API_PORT}"; then
+if upsert_osmo_config_value_db "${OSMO_NS}" WORKFLOW workflow_data "${WORKFLOW_STORAGE_VALUE}"; then
     log_success "Workflow data storage configured"
 else
     log_error "Failed to configure workflow data storage"
-    rm -f /tmp/workflow_log_config.json /tmp/workflow_data_config.json
     exit 1
 fi
-
-# Cleanup temp files
-rm -f /tmp/workflow_log_config.json /tmp/workflow_data_config.json
 
 # -----------------------------------------------------------------------------
 # Configure Workflow Limits
@@ -239,12 +187,13 @@ rm -f /tmp/workflow_limits_config.json
 # -----------------------------------------------------------------------------
 # Restart components that cache workflow storage config
 # -----------------------------------------------------------------------------
-# OSMO worker uploads workflow specs/logs to object storage. Service reads them
-# back for UI/API access. After changing WORKFLOW storage config, restart both
-# so new submissions do not keep using stale region/endpoint settings.
+# OSMO worker uploads workflow specs/logs to object storage. Service and logger
+# read those artifacts back, and agent/logger also rely on the shared AWS_*
+# env wiring from 05. Restart the storage-aware components so they all reload
+# the current endpoint and credential path.
 log_info "Restarting OSMO components to reload workflow storage config..."
 
-for deploy in osmo-worker osmo-service; do
+for deploy in osmo-worker osmo-service osmo-logger osmo-agent; do
     if kubectl get deployment "$deploy" -n "${OSMO_NS}" >/dev/null 2>&1; then
         if kubectl rollout restart "deployment/${deploy}" -n "${OSMO_NS}" >/dev/null 2>&1; then
             log_info "Waiting for ${deploy} rollout..."

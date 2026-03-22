@@ -626,6 +626,149 @@ get_mysterybox_secret() {
     fi
 }
 
+normalize_nebius_storage_endpoint() {
+    local endpoint="$1"
+
+    endpoint="${endpoint%/}"
+    if [[ -z "$endpoint" ]]; then
+        return 1
+    fi
+
+    if [[ "$endpoint" =~ ^https://[^/:]+$ ]]; then
+        printf '%s:443\n' "$endpoint"
+    else
+        printf '%s\n' "$endpoint"
+    fi
+}
+
+get_kubernetes_secret_value() {
+    local ns="${1:-default}"
+    local secret_name="$2"
+    local key="$3"
+    local encoded
+
+    encoded=$(kubectl get secret "$secret_name" -n "$ns" -o jsonpath="{.data.${key}}" 2>/dev/null || echo "")
+    if [[ -n "$encoded" ]]; then
+        printf '%s' "$encoded" | base64 -d 2>/dev/null
+    fi
+}
+
+sync_osmo_storage_secret() {
+    local ns="${1:-osmo}"
+    local tf_dir="${2:-../001-iac}"
+    local access_key
+    local secret_ref_id
+    local secret_key
+
+    access_key=$(get_tf_output "storage_credentials.access_key_id" "$tf_dir" 2>/dev/null || echo "")
+    secret_ref_id=$(get_tf_output "storage_secret_reference_id" "$tf_dir" 2>/dev/null || echo "")
+    secret_key=""
+
+    if [[ -n "$secret_ref_id" ]]; then
+        secret_key=$(get_mysterybox_secret "$secret_ref_id" "secret" 2>/dev/null || echo "")
+    fi
+
+    if [[ -z "$access_key" || -z "$secret_key" ]]; then
+        log_error "Could not retrieve storage credentials from Terraform/MysteryBox"
+        return 1
+    fi
+
+    kubectl create secret generic osmo-storage \
+        --namespace "$ns" \
+        --from-literal=access-key-id="${access_key}" \
+        --from-literal=secret-access-key="${secret_key}" \
+        --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+
+    log_success "osmo-storage secret synced"
+}
+
+probe_nebius_bucket_rw() {
+    local ns="${1:-osmo}"
+    local bucket="$2"
+    local endpoint="$3"
+    local region="$4"
+    local secret_name="${5:-osmo-storage}"
+    local access_key
+    local secret_key
+    local probe_key
+    local tmp_file
+    local run_name
+    local probe_script
+
+    if [[ -z "$bucket" || -z "$endpoint" || -z "$region" ]]; then
+        log_error "Bucket probe requires bucket, endpoint, and region"
+        return 1
+    fi
+
+    endpoint=$(normalize_nebius_storage_endpoint "$endpoint") || return 1
+    access_key=$(get_kubernetes_secret_value "$ns" "$secret_name" "access-key-id")
+    secret_key=$(get_kubernetes_secret_value "$ns" "$secret_name" "secret-access-key")
+
+    if [[ -z "$access_key" || -z "$secret_key" ]]; then
+        log_error "Secret ${secret_name} in namespace ${ns} is missing storage credentials"
+        return 1
+    fi
+
+    probe_key="osmo-storage-probe-$(date +%s)-${RANDOM}"
+
+    if check_command aws; then
+        tmp_file=$(mktemp "/tmp/osmo-storage-probe.XXXXXX")
+        printf 'osmo-storage-probe\n' >"$tmp_file"
+
+        if AWS_EC2_METADATA_DISABLED=true \
+            AWS_ACCESS_KEY_ID="$access_key" \
+            AWS_SECRET_ACCESS_KEY="$secret_key" \
+            AWS_DEFAULT_REGION="$region" \
+            aws --endpoint-url "$endpoint" s3api head-bucket --bucket "$bucket" >/dev/null 2>&1 &&
+            AWS_EC2_METADATA_DISABLED=true \
+            AWS_ACCESS_KEY_ID="$access_key" \
+            AWS_SECRET_ACCESS_KEY="$secret_key" \
+            AWS_DEFAULT_REGION="$region" \
+            aws --endpoint-url "$endpoint" s3api put-object --bucket "$bucket" --key "$probe_key" --body "$tmp_file" >/dev/null 2>&1 &&
+            AWS_EC2_METADATA_DISABLED=true \
+            AWS_ACCESS_KEY_ID="$access_key" \
+            AWS_SECRET_ACCESS_KEY="$secret_key" \
+            AWS_DEFAULT_REGION="$region" \
+            aws --endpoint-url "$endpoint" s3api delete-object --bucket "$bucket" --key "$probe_key" >/dev/null 2>&1; then
+            rm -f "$tmp_file" 2>/dev/null || true
+            return 0
+        fi
+
+        rm -f "$tmp_file" 2>/dev/null || true
+    fi
+
+    run_name="osmo-s3-probe-${RANDOM}${RANDOM}"
+    probe_script=$(cat <<EOF
+set -e
+aws --endpoint-url "$endpoint" s3api head-bucket --bucket "$bucket" >/dev/null
+aws --endpoint-url "$endpoint" s3api put-object --bucket "$bucket" --key "$probe_key" --body /etc/hosts >/dev/null
+aws --endpoint-url "$endpoint" s3api delete-object --bucket "$bucket" --key "$probe_key" >/dev/null
+echo S3_PROBE_OK
+EOF
+)
+
+    if kubectl run "$run_name" \
+        --rm --restart=Never -i \
+        -n "$ns" \
+        --image=amazon/aws-cli:2.15.0 \
+        --env="AWS_ACCESS_KEY_ID=${access_key}" \
+        --env="AWS_SECRET_ACCESS_KEY=${secret_key}" \
+        --env="AWS_DEFAULT_REGION=${region}" \
+        --env="AWS_EC2_METADATA_DISABLED=true" \
+        --command -- \
+        sh -lc "$probe_script" >/tmp/_osmo_s3_probe.out 2>/tmp/_osmo_s3_probe.err; then
+        if grep -q "S3_PROBE_OK" /tmp/_osmo_s3_probe.out 2>/dev/null; then
+            rm -f /tmp/_osmo_s3_probe.out /tmp/_osmo_s3_probe.err 2>/dev/null || true
+            return 0
+        fi
+    fi
+
+    cat /tmp/_osmo_s3_probe.out 2>/dev/null >&2 || true
+    cat /tmp/_osmo_s3_probe.err 2>/dev/null >&2 || true
+    rm -f /tmp/_osmo_s3_probe.out /tmp/_osmo_s3_probe.err 2>/dev/null || true
+    return 1
+}
+
 # Read the Postgres connection settings from the live osmo-service deployment.
 discover_osmo_service_postgres_config() {
     local ns="${1:-osmo}"
@@ -726,6 +869,95 @@ sql_escape_literal() {
     printf '%s' "$1" | sed "s/'/''/g"
 }
 
+get_osmo_config_value_db() {
+    local ns="${1:-osmo}"
+    local config_type="$2"
+    local key="$3"
+    local pg_host="${4:-${POSTGRES_HOST:-}}"
+    local pg_port="${5:-${POSTGRES_PORT:-}}"
+    local pg_db="${6:-${POSTGRES_DB:-${OSMO_POSTGRES_DATABASE:-osmo}}}"
+    local pg_user="${7:-${POSTGRES_USER:-}}"
+    local pg_password="${8:-${POSTGRES_PASSWORD:-}}"
+    local escaped_type
+    local escaped_key
+
+    escaped_type=$(sql_escape_literal "$config_type")
+    escaped_key=$(sql_escape_literal "$key")
+    run_osmo_postgres_sql \
+        "select value from configs where type = '${escaped_type}' and key = '${escaped_key}';" \
+        "$ns" "$pg_host" "$pg_port" "$pg_db" "$pg_user" "$pg_password"
+}
+
+osmo_config_key_exists_db() {
+    local ns="${1:-osmo}"
+    local config_type="$2"
+    local key="$3"
+    local pg_host="${4:-${POSTGRES_HOST:-}}"
+    local pg_port="${5:-${POSTGRES_PORT:-}}"
+    local pg_db="${6:-${POSTGRES_DB:-${OSMO_POSTGRES_DATABASE:-osmo}}}"
+    local pg_user="${7:-${POSTGRES_USER:-}}"
+    local pg_password="${8:-${POSTGRES_PASSWORD:-}}"
+    local value
+
+    value=$(get_osmo_config_value_db "$ns" "$config_type" "$key" "$pg_host" "$pg_port" "$pg_db" "$pg_user" "$pg_password" 2>/dev/null || true)
+    [[ -n "$value" ]]
+}
+
+upsert_osmo_config_value_db() {
+    local ns="${1:-osmo}"
+    local config_type="$2"
+    local key="$3"
+    local value="$4"
+    local pg_host="${5:-${POSTGRES_HOST:-}}"
+    local pg_port="${6:-${POSTGRES_PORT:-}}"
+    local pg_db="${7:-${POSTGRES_DB:-${OSMO_POSTGRES_DATABASE:-osmo}}}"
+    local pg_user="${8:-${POSTGRES_USER:-}}"
+    local pg_password="${9:-${POSTGRES_PASSWORD:-}}"
+    local escaped_type
+    local escaped_key
+    local escaped_value
+
+    if [[ -z "$config_type" || -z "$key" ]]; then
+        log_error "config_type and key must not be empty"
+        return 1
+    fi
+
+    escaped_type=$(sql_escape_literal "$config_type")
+    escaped_key=$(sql_escape_literal "$key")
+    escaped_value=$(sql_escape_literal "$value")
+    run_osmo_postgres_sql \
+        "with updated as (
+            update configs
+               set value = '${escaped_value}'
+             where type = '${escaped_type}'
+               and key = '${escaped_key}'
+         returning 1
+        )
+        insert into configs(key, value, type)
+        select '${escaped_key}', '${escaped_value}', '${escaped_type}'
+         where not exists (select 1 from updated);" \
+        "$ns" "$pg_host" "$pg_port" "$pg_db" "$pg_user" "$pg_password" >/dev/null
+}
+
+delete_osmo_config_value_db() {
+    local ns="${1:-osmo}"
+    local config_type="$2"
+    local key="$3"
+    local pg_host="${4:-${POSTGRES_HOST:-}}"
+    local pg_port="${5:-${POSTGRES_PORT:-}}"
+    local pg_db="${6:-${POSTGRES_DB:-${OSMO_POSTGRES_DATABASE:-osmo}}}"
+    local pg_user="${7:-${POSTGRES_USER:-}}"
+    local pg_password="${8:-${POSTGRES_PASSWORD:-}}"
+    local escaped_type
+    local escaped_key
+
+    escaped_type=$(sql_escape_literal "$config_type")
+    escaped_key=$(sql_escape_literal "$key")
+    run_osmo_postgres_sql \
+        "delete from configs where type = '${escaped_type}' and key = '${escaped_key}';" \
+        "$ns" "$pg_host" "$pg_port" "$pg_db" "$pg_user" "$pg_password" >/dev/null
+}
+
 get_osmo_service_config_value_db() {
     local ns="${1:-osmo}"
     local key="$2"
@@ -734,12 +966,8 @@ get_osmo_service_config_value_db() {
     local pg_db="${5:-${POSTGRES_DB:-${OSMO_POSTGRES_DATABASE:-osmo}}}"
     local pg_user="${6:-${POSTGRES_USER:-}}"
     local pg_password="${7:-${POSTGRES_PASSWORD:-}}"
-    local escaped_key
 
-    escaped_key=$(sql_escape_literal "$key")
-    run_osmo_postgres_sql \
-        "select value from configs where type = 'SERVICE' and key = '${escaped_key}';" \
-        "$ns" "$pg_host" "$pg_port" "$pg_db" "$pg_user" "$pg_password"
+    get_osmo_config_value_db "$ns" SERVICE "$key" "$pg_host" "$pg_port" "$pg_db" "$pg_user" "$pg_password"
 }
 
 osmo_service_config_key_exists() {
@@ -750,10 +978,8 @@ osmo_service_config_key_exists() {
     local pg_db="${5:-${POSTGRES_DB:-${OSMO_POSTGRES_DATABASE:-osmo}}}"
     local pg_user="${6:-${POSTGRES_USER:-}}"
     local pg_password="${7:-${POSTGRES_PASSWORD:-}}"
-    local value
 
-    value=$(get_osmo_service_config_value_db "$ns" "$key" "$pg_host" "$pg_port" "$pg_db" "$pg_user" "$pg_password" 2>/dev/null || true)
-    [[ -n "$value" ]]
+    osmo_config_key_exists_db "$ns" SERVICE "$key" "$pg_host" "$pg_port" "$pg_db" "$pg_user" "$pg_password"
 }
 
 # Upsert SERVICE.service_base_url directly in Postgres.
@@ -766,26 +992,14 @@ upsert_osmo_service_base_url_db() {
     local pg_db="${5:-${POSTGRES_DB:-${OSMO_POSTGRES_DATABASE:-osmo}}}"
     local pg_user="${6:-${POSTGRES_USER:-}}"
     local pg_password="${7:-${POSTGRES_PASSWORD:-}}"
-    local escaped_url
 
     if [[ -z "$service_url" ]]; then
         log_error "service_url must not be empty"
         return 1
     fi
 
-    escaped_url=$(sql_escape_literal "$service_url")
-    run_osmo_postgres_sql \
-        "with updated as (
-            update configs
-               set value = '${escaped_url}'
-             where type = 'SERVICE'
-               and key = 'service_base_url'
-         returning 1
-        )
-        insert into configs(key, value, type)
-        select 'service_base_url', '${escaped_url}', 'SERVICE'
-         where not exists (select 1 from updated);" \
-        "$ns" "$pg_host" "$pg_port" "$pg_db" "$pg_user" "$pg_password" >/dev/null
+    upsert_osmo_config_value_db "$ns" SERVICE service_base_url "$service_url" \
+        "$pg_host" "$pg_port" "$pg_db" "$pg_user" "$pg_password"
 }
 
 # Delete SERVICE.service_auth so osmo-service regenerates it on restart.
@@ -797,9 +1011,8 @@ delete_osmo_service_auth_db() {
     local pg_user="${5:-${POSTGRES_USER:-}}"
     local pg_password="${6:-${POSTGRES_PASSWORD:-}}"
 
-    run_osmo_postgres_sql \
-        "delete from configs where type = 'SERVICE' and key = 'service_auth';" \
-        "$ns" "$pg_host" "$pg_port" "$pg_db" "$pg_user" "$pg_password" >/dev/null
+    delete_osmo_config_value_db "$ns" SERVICE service_auth \
+        "$pg_host" "$pg_port" "$pg_db" "$pg_user" "$pg_password"
 }
 
 # -----------------------------------------------------------------------------

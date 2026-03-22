@@ -352,6 +352,11 @@ log_info "--- Check 5: WORKFLOW config ---"
 WORKFLOW_CONFIG=$(osmo_curl GET "${OSMO_URL}/api/configs/workflow" 2>/dev/null || echo "")
 if [[ -n "$WORKFLOW_CONFIG" && "$WORKFLOW_CONFIG" != "null" ]]; then
     WORKFLOW_CFG=$(echo "$WORKFLOW_CONFIG" | jq '.configs_dict // .' 2>/dev/null || echo "")
+    EXPECTED_STORAGE_OVERRIDE=""
+
+    if [[ -n "${NEBIUS_REGION:-}" ]]; then
+        EXPECTED_STORAGE_OVERRIDE=$(normalize_nebius_storage_endpoint "https://storage.${NEBIUS_REGION}.nebius.cloud")
+    fi
 
     MAX_NUM_TASKS=$(echo "$WORKFLOW_CFG" | jq -r '.max_num_tasks // empty' 2>/dev/null || echo "")
     if [[ -z "$MAX_NUM_TASKS" ]]; then
@@ -366,6 +371,8 @@ if [[ -n "$WORKFLOW_CONFIG" && "$WORKFLOW_CONFIG" != "null" ]]; then
         STORAGE_ENDPOINT=$(echo "$WORKFLOW_CFG" | jq -r --arg key "$STORAGE_KEY" '.[$key].credential.endpoint // empty' 2>/dev/null || echo "")
         STORAGE_OVERRIDE_URL=$(echo "$WORKFLOW_CFG" | jq -r --arg key "$STORAGE_KEY" '.[$key].credential.override_url // empty' 2>/dev/null || echo "")
         STORAGE_REGION=$(echo "$WORKFLOW_CFG" | jq -r --arg key "$STORAGE_KEY" '.[$key].credential.region // empty' 2>/dev/null || echo "")
+        STORAGE_ACCESS_KEY_ID=$(echo "$WORKFLOW_CFG" | jq -r --arg key "$STORAGE_KEY" '.[$key].credential.access_key_id // empty' 2>/dev/null || echo "")
+        STORAGE_ACCESS_KEY=$(echo "$WORKFLOW_CFG" | jq -r --arg key "$STORAGE_KEY" '.[$key].credential.access_key // empty' 2>/dev/null || echo "")
 
         if [[ -z "$STORAGE_ENDPOINT" ]]; then
             check_fail "${STORAGE_KEY}: credential.endpoint missing"
@@ -375,8 +382,8 @@ if [[ -n "$WORKFLOW_CONFIG" && "$WORKFLOW_CONFIG" != "null" ]]; then
 
         if [[ -z "$STORAGE_OVERRIDE_URL" ]]; then
             check_fail "${STORAGE_KEY}: credential.override_url missing (Nebius Object Storage needs the HTTPS endpoint)"
-        elif [[ -n "${NEBIUS_REGION:-}" && "$STORAGE_OVERRIDE_URL" != "https://storage.${NEBIUS_REGION}.nebius.cloud" ]]; then
-            check_fail "${STORAGE_KEY}: credential.override_url=${STORAGE_OVERRIDE_URL} (expected https://storage.${NEBIUS_REGION}.nebius.cloud)"
+        elif [[ -n "$EXPECTED_STORAGE_OVERRIDE" && "$STORAGE_OVERRIDE_URL" != "$EXPECTED_STORAGE_OVERRIDE" ]]; then
+            check_fail "${STORAGE_KEY}: credential.override_url=${STORAGE_OVERRIDE_URL} (expected ${EXPECTED_STORAGE_OVERRIDE})"
         else
             check_pass "${STORAGE_KEY}: credential.override_url=${STORAGE_OVERRIDE_URL}"
         fi
@@ -388,7 +395,55 @@ if [[ -n "$WORKFLOW_CONFIG" && "$WORKFLOW_CONFIG" != "null" ]]; then
         else
             check_pass "${STORAGE_KEY}: credential.region=${STORAGE_REGION}"
         fi
+
+        if [[ -n "$STORAGE_ACCESS_KEY_ID" && -n "$STORAGE_ACCESS_KEY" ]]; then
+            check_pass "${STORAGE_KEY}: inline access keys present"
+        elif [[ -n "$STORAGE_ACCESS_KEY_ID" || -n "$STORAGE_ACCESS_KEY" ]]; then
+            check_fail "${STORAGE_KEY}: inline access keys are only partially configured"
+        else
+            check_warn "${STORAGE_KEY}: inline access keys absent; this only works on OSMO builds that support env-backed workflow credentials"
+        fi
     done
+
+    for deploy in osmo-service osmo-worker osmo-logger osmo-agent; do
+        DEPLOYMENT_JSON=$(kubectl get deployment "$deploy" -n "${OSMO_NAMESPACE}" -o json 2>/dev/null || echo "")
+        if [[ -z "$DEPLOYMENT_JSON" ]]; then
+            check_fail "Deployment ${deploy} not found"
+            continue
+        fi
+
+        DEPLOY_ENV_NAMES=$(echo "$DEPLOYMENT_JSON" | jq -r '
+            .spec.template.spec.containers[]
+            | select(.name == "'"${deploy}"'")
+            | .env[]?.name
+        ' 2>/dev/null || echo "")
+
+        if echo "$DEPLOY_ENV_NAMES" | grep -qx "AWS_ACCESS_KEY_ID" &&
+           echo "$DEPLOY_ENV_NAMES" | grep -qx "AWS_SECRET_ACCESS_KEY" &&
+           echo "$DEPLOY_ENV_NAMES" | grep -qx "AWS_ENDPOINT_URL_S3" &&
+           echo "$DEPLOY_ENV_NAMES" | grep -qx "AWS_DEFAULT_REGION"; then
+            check_pass "${deploy}: AWS storage env wiring present"
+        else
+            check_fail "${deploy}: missing AWS storage env wiring from osmo-storage"
+        fi
+    done
+
+    VERIFY_BUCKET=$(get_tf_output "storage_bucket.name" "${SCRIPT_DIR}/../001-iac" 2>/dev/null || echo "")
+    VERIFY_ENDPOINT=$(get_tf_output "storage_bucket.endpoint" "${SCRIPT_DIR}/../001-iac" 2>/dev/null || echo "")
+    if [[ -z "$VERIFY_ENDPOINT" && -n "${NEBIUS_REGION:-}" ]]; then
+        VERIFY_ENDPOINT="https://storage.${NEBIUS_REGION}.nebius.cloud"
+    fi
+    if [[ -n "$VERIFY_ENDPOINT" ]]; then
+        VERIFY_ENDPOINT=$(normalize_nebius_storage_endpoint "$VERIFY_ENDPOINT")
+    fi
+
+    if [[ -z "$VERIFY_BUCKET" || -z "$VERIFY_ENDPOINT" || -z "${NEBIUS_REGION:-}" ]]; then
+        check_warn "Skipping live bucket probe (bucket / endpoint / NEBIUS_REGION missing)"
+    elif probe_nebius_bucket_rw "${OSMO_NAMESPACE}" "${VERIFY_BUCKET}" "${VERIFY_ENDPOINT}" "${NEBIUS_REGION}"; then
+        check_pass "osmo-storage secret can read/write ${VERIFY_BUCKET}"
+    else
+        check_fail "osmo-storage secret cannot read/write ${VERIFY_BUCKET}"
+    fi
 else
     check_fail "Could not retrieve WORKFLOW config from OSMO API"
 fi
