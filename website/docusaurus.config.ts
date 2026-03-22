@@ -11,9 +11,9 @@ const config: Config = {
     v4: true,
   },
 
-  url: 'https://nebius.github.io',
-  baseUrl: '/',
-  organizationName: 'nebius',
+  url: 'https://dorukozturk.github.io',
+  baseUrl: '/nebius-solutions-library/',
+  organizationName: 'dorukozturk',
   projectName: 'nebius-solutions-library',
 
   onBrokenLinks: 'throw',
