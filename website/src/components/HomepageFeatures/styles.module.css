@@ -1,0 +1,75 @@
+.features {
+  padding: 1rem 0 4rem;
+  width: 100%;
+}
+
+.header {
+  max-width: 780px;
+  margin-bottom: 2rem;
+}
+
+.sectionLabel {
+  margin-bottom: 0.75rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ifm-color-primary);
+}
+
+.sectionTitle {
+  margin-bottom: 0.75rem;
+  font-size: clamp(1.8rem, 3vw, 2.7rem);
+  letter-spacing: -0.03em;
+}
+
+.sectionText {
+  margin: 0;
+  color: var(--ifm-color-emphasis-700);
+  font-size: 1.05rem;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.featureCard {
+  padding: 1.4rem;
+  border: 1px solid var(--ifm-color-emphasis-200);
+  border-radius: 22px;
+  background:
+    linear-gradient(180deg, rgba(10, 112, 255, 0.04) 0%, rgba(255, 255, 255, 0.88) 100%);
+  min-height: 100%;
+}
+
+[data-theme='dark'] .featureCard {
+  background:
+    linear-gradient(180deg, rgba(10, 112, 255, 0.08) 0%, rgba(17, 25, 39, 0.92) 100%);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.kicker {
+  margin-bottom: 0.5rem;
+  color: var(--ifm-color-primary);
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.title {
+  margin-bottom: 0.75rem;
+}
+
+.description {
+  margin: 0;
+  color: var(--ifm-color-emphasis-700);
+}
+
+@media screen and (max-width: 996px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}

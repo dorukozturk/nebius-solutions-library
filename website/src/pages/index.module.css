@@ -1,0 +1,100 @@
+.heroBanner {
+  padding: 4.5rem 0 3rem;
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at top left, rgba(35, 140, 255, 0.14), transparent 32%),
+    linear-gradient(180deg, #f8fbff 0%, #f1f5fa 48%, #ffffff 100%);
+}
+
+[data-theme='dark'] .heroBanner {
+  background:
+    radial-gradient(circle at top left, rgba(76, 161, 255, 0.14), transparent 32%),
+    linear-gradient(180deg, #09111a 0%, #0e1722 48%, #111927 100%);
+}
+
+.buttons {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.heroCopy {
+  max-width: 760px;
+}
+
+.eyebrow {
+  margin: 0 0 1rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ifm-color-primary);
+}
+
+.heroTitle {
+  margin-bottom: 1rem;
+  font-size: clamp(2.8rem, 6vw, 5rem);
+  line-height: 0.95;
+  letter-spacing: -0.04em;
+}
+
+.heroSubtitle {
+  max-width: 48rem;
+  margin: 0 0 1.5rem;
+  font-size: 1.05rem;
+  line-height: 1.6;
+  color: var(--ifm-color-emphasis-700);
+}
+
+.catalogGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  margin-top: 2.25rem;
+}
+
+.catalogCard {
+  padding: 1.25rem 1.3rem;
+  border: 1px solid var(--ifm-color-emphasis-200);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.76);
+}
+
+[data-theme='dark'] .catalogCard {
+  background: rgba(17, 25, 39, 0.76);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.catalogLabel {
+  margin: 0 0 0.55rem;
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ifm-color-primary);
+}
+
+.catalogTitle {
+  margin-bottom: 0.55rem;
+  font-size: 1.35rem;
+}
+
+.catalogText {
+  margin-bottom: 0.9rem;
+  color: var(--ifm-color-emphasis-700);
+}
+
+.catalogLink {
+  font-weight: 600;
+}
+
+@media screen and (max-width: 996px) {
+  .heroBanner {
+    padding: 3rem 0 2rem;
+  }
+
+  .catalogGrid {
+    grid-template-columns: 1fr;
+  }
+}

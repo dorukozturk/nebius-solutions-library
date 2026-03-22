@@ -1,0 +1,56 @@
+{
+  "name": "nebius-solutions-library-docs",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "docusaurus": "docusaurus",
+    "start": "docusaurus start",
+    "build": "docusaurus build",
+    "swizzle": "docusaurus swizzle",
+    "deploy": "docusaurus deploy",
+    "clear": "docusaurus clear",
+    "serve": "docusaurus serve",
+    "write-translations": "docusaurus write-translations",
+    "write-heading-ids": "docusaurus write-heading-ids",
+    "typecheck": "tsc",
+    "generate:soperator-docs": "node ./scripts/generate-soperator-docs.mjs",
+    "generate:k8s-training-docs": "node ./scripts/generate-k8s-training-docs.mjs",
+    "generate:bastion-docs": "node ./scripts/generate-flat-tfvars-docs.mjs --title Bastion --source ../bastion/terraform.tfvars --output ./docs/bastion/generated-configuration-reference.md",
+    "generate:wireguard-docs": "node ./scripts/generate-flat-tfvars-docs.mjs --title WireGuard --source ../wireguard/terraform.tfvars --output ./docs/wireguard/generated-configuration-reference.md",
+    "generate:dsvm-docs": "node ./scripts/generate-flat-tfvars-docs.mjs --title DSVM --source ../dsvm/terraform.tfvars --output ./docs/dsvm/generated-configuration-reference.md",
+    "generate:nfs-server-docs": "node ./scripts/generate-flat-tfvars-docs.mjs --title NFS Server --source ../nfs-server/terraform.tfvars --output ./docs/nfs-server/generated-configuration-reference.md",
+    "generate:vm-instance-docs": "node ./scripts/generate-flat-tfvars-docs.mjs --title VM Instance --source ../vm-instance/terraform.tfvars --output ./docs/vm-instance/generated-configuration-reference.md",
+    "generate:compute-testing-docs": "node ./scripts/generate-flat-tfvars-docs.mjs --title Compute Testing --source ../compute-testing/terraform.tfvars --output ./docs/compute-testing/generated-configuration-reference.md",
+    "generate:all-solution-docs": "npm run generate:soperator-docs && npm run generate:k8s-training-docs && npm run generate:bastion-docs && npm run generate:wireguard-docs && npm run generate:dsvm-docs && npm run generate:nfs-server-docs && npm run generate:vm-instance-docs && npm run generate:compute-testing-docs"
+  },
+  "dependencies": {
+    "@docusaurus/core": "3.9.2",
+    "@docusaurus/preset-classic": "3.9.2",
+    "@mdx-js/react": "^3.0.0",
+    "clsx": "^2.0.0",
+    "prism-react-renderer": "^2.3.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@docusaurus/module-type-aliases": "3.9.2",
+    "@docusaurus/tsconfig": "3.9.2",
+    "@docusaurus/types": "3.9.2",
+    "typescript": "~5.6.2"
+  },
+  "browserslist": {
+    "production": [
+      ">0.5%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 3 chrome version",
+      "last 3 firefox version",
+      "last 5 safari version"
+    ]
+  },
+  "engines": {
+    "node": ">=20.0"
+  }
+}
