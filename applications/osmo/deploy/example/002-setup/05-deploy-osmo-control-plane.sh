@@ -2638,11 +2638,47 @@ echo "Services:"
 kubectl get svc -n "${OSMO_NAMESPACE}"
 
 # -----------------------------------------------------------------------------
+# Step 11.5: Refresh internal service auth config
+# -----------------------------------------------------------------------------
+# OSMO stores SERVICE config as key/value rows in Postgres. Rebuild service_auth
+# on reruns before touching service_base_url so workflow submission uses a fresh
+# signing key.
+if [[ "${REFRESH_SERVICE_AUTH_CONFIG_ON_05:-true}" == "true" ]]; then
+    echo ""
+    log_info "Refreshing internal OSMO service auth config..."
+
+    if delete_osmo_service_auth_db "${OSMO_NAMESPACE}" "${POSTGRES_HOST}" "${POSTGRES_PORT}" "${POSTGRES_DB}" "${POSTGRES_USER}" "${POSTGRES_PASSWORD}"; then
+        log_info "Restarting osmo-service so it can regenerate service_auth..."
+        kubectl rollout restart deployment osmo-service -n "${OSMO_NAMESPACE}" >/dev/null 2>&1 || true
+        kubectl rollout status deployment osmo-service -n "${OSMO_NAMESPACE}" --timeout=180s || log_warning "osmo-service rollout did not complete cleanly"
+
+        if wait_for_condition \
+            "SERVICE service_auth regeneration" \
+            120 5 \
+            osmo_service_config_key_exists "${OSMO_NAMESPACE}" service_auth "${POSTGRES_HOST}" "${POSTGRES_PORT}" "${POSTGRES_DB}" "${POSTGRES_USER}" "${POSTGRES_PASSWORD}"; then
+            log_success "SERVICE service_auth regenerated"
+        else
+            log_warning "SERVICE service_auth was not observed in Postgres after osmo-service restart"
+        fi
+
+        for _deploy in osmo-agent osmo-worker osmo-logger; do
+            if kubectl get deployment "${_deploy}" -n "${OSMO_NAMESPACE}" &>/dev/null; then
+                log_info "Restarting ${_deploy} to pick up fresh service auth config..."
+                kubectl rollout restart deployment "${_deploy}" -n "${OSMO_NAMESPACE}" >/dev/null 2>&1 || true
+                kubectl rollout status deployment "${_deploy}" -n "${OSMO_NAMESPACE}" --timeout=180s || log_warning "${_deploy} rollout did not complete cleanly"
+            fi
+        done
+    else
+        log_warning "Could not refresh SERVICE service_auth. Workflow submission may still fail until 05 is rerun successfully."
+    fi
+fi
+
+# -----------------------------------------------------------------------------
 # Step 12: Configure service_base_url (required for workflow execution)
 # -----------------------------------------------------------------------------
 # The osmo-ctrl sidecar in every workflow pod needs service_base_url to
 # stream logs, report task status, and refresh tokens.
-# This is an application-level config that must be set via the OSMO API.
+# Store it directly in Postgres so reruns do not rewrite SERVICE.service_auth.
 
 echo ""
 log_info "Configuring service_base_url for workflow execution..."
@@ -2687,13 +2723,7 @@ if [[ -n "$TARGET_SERVICE_URL" ]]; then
                 log_warning "Updating service_base_url from '${CURRENT_SVC_URL}' to '${TARGET_SERVICE_URL}'"
             fi
 
-            # Write config and use PATCH API
-            cat > /tmp/service_url_fix.json << SVCEOF
-{
-  "service_base_url": "${TARGET_SERVICE_URL}"
-}
-SVCEOF
-            if osmo_config_update SERVICE /tmp/service_url_fix.json "Set service_base_url for osmo-ctrl sidecar" "${OSMO_API_PORT}"; then
+            if upsert_osmo_service_base_url_db "${OSMO_NAMESPACE}" "${TARGET_SERVICE_URL}" "${POSTGRES_HOST}" "${POSTGRES_PORT}" "${POSTGRES_DB}" "${POSTGRES_USER}" "${POSTGRES_PASSWORD}"; then
                 # Verify
                 NEW_SVC_URL=$(osmo_curl GET "${OSMO_API_URL}/api/configs/service" 2>/dev/null | jq -r '.service_base_url // ""')
                 if [[ "$NEW_SVC_URL" == "$TARGET_SERVICE_URL" ]]; then
@@ -2704,7 +2734,6 @@ SVCEOF
             else
                 log_warning "Failed to set service_base_url. Run ./08-configure-service-url.sh manually."
             fi
-            rm -f /tmp/service_url_fix.json
         fi
         _cleanup_pf
     else

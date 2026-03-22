@@ -676,7 +676,7 @@ fi  # end TLS_MODE
 
 # =============================================================================
 # Update OSMO service_base_url to HTTPS (only if OSMO is already deployed)
-# Use auth-bypass port-forward + direct PATCH so we don't trigger Keycloak (.local redirect).
+# Use a direct DB upsert so reruns do not corrupt SERVICE.service_auth.
 # =============================================================================
 if [[ "$OSMO_DEPLOYED" == "true" ]]; then
     log_info "Updating OSMO service_base_url to https://${MAIN_HOSTNAME}..."
@@ -691,19 +691,13 @@ if [[ "$OSMO_DEPLOYED" == "true" ]]; then
     if start_osmo_api_session "${OSMO_NS}" 8080 15; then
         _PF_PID=$PORT_FORWARD_PID
         _PF_LOG=$PORT_FORWARD_LOG
-        cat > /tmp/service_url_tls.json <<SVCEOF
-{
-  "service_base_url": "https://${MAIN_HOSTNAME}"
-}
-SVCEOF
-        if osmo_config_update SERVICE /tmp/service_url_tls.json "Enable HTTPS" "${OSMO_API_PORT}"; then
+        if upsert_osmo_service_base_url_db "${OSMO_NS}" "https://${MAIN_HOSTNAME}"; then
             NEW_URL=$(osmo_curl GET "${OSMO_API_URL}/api/configs/service" 2>/dev/null | jq -r '.service_base_url // ""')
             log_success "service_base_url updated to: ${NEW_URL}"
         else
             log_warning "Could not update service_base_url automatically."
             log_info "Run: ./08-configure-service-url.sh https://${MAIN_HOSTNAME}"
         fi
-        rm -f /tmp/service_url_tls.json
     else
         log_warning "Could not connect to OSMO API. Update service_base_url manually:"
         log_info "  ./08-configure-service-url.sh https://${MAIN_HOSTNAME}"

@@ -344,14 +344,16 @@ else
 fi
 
 # =============================================================================
-# Check 5: max_num_tasks >= 200
+# Check 5: WORKFLOW config
 # =============================================================================
 echo ""
-log_info "--- Check 5: WORKFLOW max_num_tasks ---"
+log_info "--- Check 5: WORKFLOW config ---"
 
 WORKFLOW_CONFIG=$(osmo_curl GET "${OSMO_URL}/api/configs/workflow" 2>/dev/null || echo "")
 if [[ -n "$WORKFLOW_CONFIG" && "$WORKFLOW_CONFIG" != "null" ]]; then
-    MAX_NUM_TASKS=$(echo "$WORKFLOW_CONFIG" | jq -r '.max_num_tasks // .configs_dict.max_num_tasks // empty' 2>/dev/null || echo "")
+    WORKFLOW_CFG=$(echo "$WORKFLOW_CONFIG" | jq '.configs_dict // .' 2>/dev/null || echo "")
+
+    MAX_NUM_TASKS=$(echo "$WORKFLOW_CFG" | jq -r '.max_num_tasks // empty' 2>/dev/null || echo "")
     if [[ -z "$MAX_NUM_TASKS" ]]; then
         check_fail "max_num_tasks not set in WORKFLOW config (default is too low)"
     elif [[ "$MAX_NUM_TASKS" -ge "$MIN_MAX_NUM_TASKS" ]] 2>/dev/null; then
@@ -359,6 +361,34 @@ if [[ -n "$WORKFLOW_CONFIG" && "$WORKFLOW_CONFIG" != "null" ]]; then
     else
         check_fail "max_num_tasks: ${MAX_NUM_TASKS} (expected >= ${MIN_MAX_NUM_TASKS})"
     fi
+
+    for STORAGE_KEY in workflow_data workflow_log; do
+        STORAGE_ENDPOINT=$(echo "$WORKFLOW_CFG" | jq -r --arg key "$STORAGE_KEY" '.[$key].credential.endpoint // empty' 2>/dev/null || echo "")
+        STORAGE_OVERRIDE_URL=$(echo "$WORKFLOW_CFG" | jq -r --arg key "$STORAGE_KEY" '.[$key].credential.override_url // empty' 2>/dev/null || echo "")
+        STORAGE_REGION=$(echo "$WORKFLOW_CFG" | jq -r --arg key "$STORAGE_KEY" '.[$key].credential.region // empty' 2>/dev/null || echo "")
+
+        if [[ -z "$STORAGE_ENDPOINT" ]]; then
+            check_fail "${STORAGE_KEY}: credential.endpoint missing"
+        else
+            check_pass "${STORAGE_KEY}: credential.endpoint set"
+        fi
+
+        if [[ -z "$STORAGE_OVERRIDE_URL" ]]; then
+            check_fail "${STORAGE_KEY}: credential.override_url missing (Nebius Object Storage needs the HTTPS endpoint)"
+        elif [[ -n "${NEBIUS_REGION:-}" && "$STORAGE_OVERRIDE_URL" != "https://storage.${NEBIUS_REGION}.nebius.cloud" ]]; then
+            check_fail "${STORAGE_KEY}: credential.override_url=${STORAGE_OVERRIDE_URL} (expected https://storage.${NEBIUS_REGION}.nebius.cloud)"
+        else
+            check_pass "${STORAGE_KEY}: credential.override_url=${STORAGE_OVERRIDE_URL}"
+        fi
+
+        if [[ -z "$STORAGE_REGION" ]]; then
+            check_fail "${STORAGE_KEY}: credential.region missing (workflow uploads will fail with Invalid region)"
+        elif [[ -n "${NEBIUS_REGION:-}" && "$STORAGE_REGION" != "$NEBIUS_REGION" ]]; then
+            check_fail "${STORAGE_KEY}: credential.region=${STORAGE_REGION} (expected ${NEBIUS_REGION})"
+        else
+            check_pass "${STORAGE_KEY}: credential.region=${STORAGE_REGION}"
+        fi
+    done
 else
     check_fail "Could not retrieve WORKFLOW config from OSMO API"
 fi

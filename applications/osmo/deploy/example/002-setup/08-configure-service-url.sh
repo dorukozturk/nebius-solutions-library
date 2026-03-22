@@ -94,21 +94,12 @@ fi
 # -----------------------------------------------------------------------------
 log_info "Configuring service_base_url to: ${SERVICE_URL}"
 
-cat > /tmp/service_url_fix.json << EOF
-{
-  "service_base_url": "${SERVICE_URL}"
-}
-EOF
-
-if osmo_config_update SERVICE /tmp/service_url_fix.json "Set service_base_url for osmo-ctrl sidecar" "${OSMO_API_PORT}"; then
+if upsert_osmo_service_base_url_db "${OSMO_NS}" "${SERVICE_URL}"; then
     log_success "service_base_url configured"
 else
     log_error "Failed to configure service_base_url"
-    rm -f /tmp/service_url_fix.json
     exit 1
 fi
-
-rm -f /tmp/service_url_fix.json
 
 # -----------------------------------------------------------------------------
 # Verify Configuration

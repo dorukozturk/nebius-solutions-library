@@ -28,8 +28,9 @@ output "storage_endpoint" {
   value       = "https://storage.${var.region}.nebius.cloud"
 }
 
-# TOS format endpoint for OSMO workflows
-# See: TODO.md Issue #9 - s3:// doesn't work, tos:// does
+# Legacy TOS-format endpoint retained for compatibility with older experiments.
+# The example setup scripts configure workflow storage with s3://<bucket> plus
+# override_url=https://storage.<region>.nebius.cloud.
 output "storage_tos_endpoint" {
   description = "TOS-format endpoint for OSMO workflow configuration"
   value       = "tos://storage.${var.region}.nebius.cloud/${nebius_storage_v1_bucket.main.name}"

@@ -133,11 +133,16 @@ if [[ -z "$S3_ACCESS_KEY" || -z "$S3_SECRET_KEY" ]]; then
     exit 1
 fi
 
-# Nebius Object Storage uses S3-compatible API
-# OSMO uses TOS (Torch Object Storage) scheme for S3-compatible storage with custom endpoints
-# Format: tos://<endpoint>/<bucket>
-S3_HOST=$(echo "$S3_ENDPOINT" | sed 's|https://||')
-BACKEND_URI="tos://${S3_HOST}/${S3_BUCKET}"
+# Nebius Object Storage uses an S3-compatible API.
+# For OSMO workflow storage, use the S3 credential schema explicitly:
+#   endpoint     = s3://<bucket>
+#   override_url = https://storage.<region>.nebius.cloud
+#   region       = <region>
+# This matches the dataset-bucket configuration and avoids the stale
+# `tos://...` workflow storage format that led to runtime "Invalid region"
+# errors during UploadWorkflowFiles.
+BACKEND_URI="s3://${S3_BUCKET}"
+OVERRIDE_URL="${S3_ENDPOINT}"
 REGION="${NEBIUS_REGION}"
 
 log_success "Storage credentials retrieved"
@@ -153,6 +158,7 @@ WORKFLOW_LOG_CONFIG=$(cat <<EOF
   "workflow_log": {
     "credential": {
       "endpoint": "${BACKEND_URI}",
+      "override_url": "${OVERRIDE_URL}",
       "access_key_id": "${S3_ACCESS_KEY}",
       "access_key": "${S3_SECRET_KEY}",
       "region": "${REGION}"
@@ -184,6 +190,7 @@ WORKFLOW_DATA_CONFIG=$(cat <<EOF
   "workflow_data": {
     "credential": {
       "endpoint": "${BACKEND_URI}",
+      "override_url": "${OVERRIDE_URL}",
       "access_key_id": "${S3_ACCESS_KEY}",
       "access_key": "${S3_SECRET_KEY}",
       "region": "${REGION}"
@@ -230,6 +237,31 @@ fi
 rm -f /tmp/workflow_limits_config.json
 
 # -----------------------------------------------------------------------------
+# Restart components that cache workflow storage config
+# -----------------------------------------------------------------------------
+# OSMO worker uploads workflow specs/logs to object storage. Service reads them
+# back for UI/API access. After changing WORKFLOW storage config, restart both
+# so new submissions do not keep using stale region/endpoint settings.
+log_info "Restarting OSMO components to reload workflow storage config..."
+
+for deploy in osmo-worker osmo-service; do
+    if kubectl get deployment "$deploy" -n "${OSMO_NS}" >/dev/null 2>&1; then
+        if kubectl rollout restart "deployment/${deploy}" -n "${OSMO_NS}" >/dev/null 2>&1; then
+            log_info "Waiting for ${deploy} rollout..."
+            if kubectl rollout status "deployment/${deploy}" -n "${OSMO_NS}" --timeout=300s >/dev/null 2>&1; then
+                log_success "${deploy} restarted"
+            else
+                log_warning "${deploy} restart did not complete before timeout; verify with: kubectl rollout status deployment/${deploy} -n ${OSMO_NS}"
+            fi
+        else
+            log_warning "Could not restart ${deploy}; verify it manually after storage changes"
+        fi
+    else
+        log_warning "Deployment ${deploy} not found in namespace ${OSMO_NS}"
+    fi
+done
+
+# -----------------------------------------------------------------------------
 # Verify Configuration
 # -----------------------------------------------------------------------------
 log_info "Verifying storage configuration..."
@@ -252,6 +284,7 @@ echo "Storage Details:"
 echo "  Bucket: ${S3_BUCKET}"
 echo "  Endpoint: ${S3_ENDPOINT}"
 echo "  Backend URI: ${BACKEND_URI}"
+echo "  Override URL: ${OVERRIDE_URL}"
 echo "  Region: ${REGION}"
 echo ""
 echo "Configured:"

@@ -626,6 +626,182 @@ get_mysterybox_secret() {
     fi
 }
 
+# Read the Postgres connection settings from the live osmo-service deployment.
+discover_osmo_service_postgres_config() {
+    local ns="${1:-osmo}"
+    local deployment_json
+    local pg_host
+    local pg_port
+    local pg_db
+    local pg_user
+    local pg_password
+
+    deployment_json=$(kubectl get deployment osmo-service -n "$ns" -o json 2>/dev/null) || {
+        log_error "Could not read deployment/osmo-service in namespace ${ns}"
+        return 1
+    }
+
+    pg_host=$(echo "$deployment_json" | jq -r '[.spec.template.spec.containers[] | select(.name=="osmo-service") | .env[]? | select(.name=="OSMO_POSTGRES_HOST") | .value][0] // empty')
+    pg_port=$(echo "$deployment_json" | jq -r '[.spec.template.spec.containers[] | select(.name=="osmo-service") | .env[]? | select(.name=="OSMO_POSTGRES_PORT") | .value][0] // empty')
+    pg_db=$(echo "$deployment_json" | jq -r '[.spec.template.spec.containers[] | select(.name=="osmo-service") | .env[]? | select(.name=="OSMO_POSTGRES_DATABASE") | .value][0] // empty')
+    pg_user=$(echo "$deployment_json" | jq -r '[.spec.template.spec.containers[] | select(.name=="osmo-service") | .env[]? | select(.name=="OSMO_POSTGRES_USER") | .value][0] // empty')
+    pg_password=$(kubectl get secret db-secret -n "$ns" -o jsonpath='{.data.db-password}' 2>/dev/null | base64 -d)
+
+    if [[ -z "$pg_host" || -z "$pg_port" || -z "$pg_db" || -z "$pg_user" || -z "$pg_password" ]]; then
+        log_error "Could not discover OSMO Postgres settings from the live cluster"
+        return 1
+    fi
+
+    printf '%s\t%s\t%s\t%s\t%s\n' "$pg_host" "$pg_port" "$pg_db" "$pg_user" "$pg_password"
+}
+
+sanitize_kubectl_run_output() {
+    awk '
+        /^All commands and output from this session/ { next }
+        /^If you don/ { next }
+        /^warning: couldn.t attach to pod/ { next }
+        /^pod ".*" deleted from .* namespace$/ { next }
+        /^pod .* terminated \(Completed\)$/ { next }
+        /^pod .* terminated \(Error\)$/ { next }
+        { print }
+    '
+}
+
+# Run a SQL statement against the live OSMO Postgres database via an ephemeral psql pod.
+run_osmo_postgres_sql() {
+    local sql="$1"
+    local ns="${2:-osmo}"
+    local pg_host="${3:-${POSTGRES_HOST:-}}"
+    local pg_port="${4:-${POSTGRES_PORT:-}}"
+    local pg_db="${5:-${POSTGRES_DB:-${OSMO_POSTGRES_DATABASE:-osmo}}}"
+    local pg_user="${6:-${POSTGRES_USER:-}}"
+    local pg_password="${7:-${POSTGRES_PASSWORD:-}}"
+    local discovered=""
+    local attempt
+    local run_name
+    local output
+    local cleaned
+
+    if [[ -z "$pg_host" || -z "$pg_port" || -z "$pg_db" || -z "$pg_user" || -z "$pg_password" ]]; then
+        discovered=$(discover_osmo_service_postgres_config "$ns") || return 1
+        IFS=$'\t' read -r pg_host pg_port pg_db pg_user pg_password <<<"$discovered"
+    fi
+
+    for attempt in 1 2 3; do
+        run_name="osmo-psql-${RANDOM}${RANDOM}"
+        log_info "Attempt ${attempt}/3: running PostgreSQL config query..."
+
+        if output=$(kubectl run "$run_name" \
+            --rm --restart=Never -i \
+            -n "$ns" \
+            --image=postgres:16-alpine \
+            --env="PGPASSWORD=${pg_password}" \
+            --command -- \
+            psql \
+                -h "$pg_host" \
+                -p "$pg_port" \
+                -U "$pg_user" \
+                -d "$pg_db" \
+                -v ON_ERROR_STOP=1 \
+                -qAtc "$sql" 2>&1); then
+            cleaned=$(printf '%s\n' "$output" | sanitize_kubectl_run_output | sed '/^$/d')
+            [[ -n "$cleaned" ]] && printf '%s\n' "$cleaned"
+            return 0
+        fi
+
+        cleaned=$(printf '%s\n' "$output" | sanitize_kubectl_run_output | sed '/^$/d')
+        [[ -n "$cleaned" ]] && printf '%s\n' "$cleaned" >&2
+
+        if [[ "$attempt" -lt 3 ]]; then
+            log_warning "PostgreSQL query failed, retrying in $((attempt * 2))s..."
+            sleep $((attempt * 2))
+        fi
+    done
+
+    log_error "Failed to run PostgreSQL query after 3 attempts"
+    return 1
+}
+
+sql_escape_literal() {
+    printf '%s' "$1" | sed "s/'/''/g"
+}
+
+get_osmo_service_config_value_db() {
+    local ns="${1:-osmo}"
+    local key="$2"
+    local pg_host="${3:-${POSTGRES_HOST:-}}"
+    local pg_port="${4:-${POSTGRES_PORT:-}}"
+    local pg_db="${5:-${POSTGRES_DB:-${OSMO_POSTGRES_DATABASE:-osmo}}}"
+    local pg_user="${6:-${POSTGRES_USER:-}}"
+    local pg_password="${7:-${POSTGRES_PASSWORD:-}}"
+    local escaped_key
+
+    escaped_key=$(sql_escape_literal "$key")
+    run_osmo_postgres_sql \
+        "select value from configs where type = 'SERVICE' and key = '${escaped_key}';" \
+        "$ns" "$pg_host" "$pg_port" "$pg_db" "$pg_user" "$pg_password"
+}
+
+osmo_service_config_key_exists() {
+    local ns="${1:-osmo}"
+    local key="$2"
+    local pg_host="${3:-${POSTGRES_HOST:-}}"
+    local pg_port="${4:-${POSTGRES_PORT:-}}"
+    local pg_db="${5:-${POSTGRES_DB:-${OSMO_POSTGRES_DATABASE:-osmo}}}"
+    local pg_user="${6:-${POSTGRES_USER:-}}"
+    local pg_password="${7:-${POSTGRES_PASSWORD:-}}"
+    local value
+
+    value=$(get_osmo_service_config_value_db "$ns" "$key" "$pg_host" "$pg_port" "$pg_db" "$pg_user" "$pg_password" 2>/dev/null || true)
+    [[ -n "$value" ]]
+}
+
+# Upsert SERVICE.service_base_url directly in Postgres.
+# This avoids the public SERVICE PATCH path, which can corrupt service_auth on reruns.
+upsert_osmo_service_base_url_db() {
+    local ns="${1:-osmo}"
+    local service_url="$2"
+    local pg_host="${3:-${POSTGRES_HOST:-}}"
+    local pg_port="${4:-${POSTGRES_PORT:-}}"
+    local pg_db="${5:-${POSTGRES_DB:-${OSMO_POSTGRES_DATABASE:-osmo}}}"
+    local pg_user="${6:-${POSTGRES_USER:-}}"
+    local pg_password="${7:-${POSTGRES_PASSWORD:-}}"
+    local escaped_url
+
+    if [[ -z "$service_url" ]]; then
+        log_error "service_url must not be empty"
+        return 1
+    fi
+
+    escaped_url=$(sql_escape_literal "$service_url")
+    run_osmo_postgres_sql \
+        "with updated as (
+            update configs
+               set value = '${escaped_url}'
+             where type = 'SERVICE'
+               and key = 'service_base_url'
+         returning 1
+        )
+        insert into configs(key, value, type)
+        select 'service_base_url', '${escaped_url}', 'SERVICE'
+         where not exists (select 1 from updated);" \
+        "$ns" "$pg_host" "$pg_port" "$pg_db" "$pg_user" "$pg_password" >/dev/null
+}
+
+# Delete SERVICE.service_auth so osmo-service regenerates it on restart.
+delete_osmo_service_auth_db() {
+    local ns="${1:-osmo}"
+    local pg_host="${2:-${POSTGRES_HOST:-}}"
+    local pg_port="${3:-${POSTGRES_PORT:-}}"
+    local pg_db="${4:-${POSTGRES_DB:-${OSMO_POSTGRES_DATABASE:-osmo}}}"
+    local pg_user="${5:-${POSTGRES_USER:-}}"
+    local pg_password="${6:-${POSTGRES_PASSWORD:-}}"
+
+    run_osmo_postgres_sql \
+        "delete from configs where type = 'SERVICE' and key = 'service_auth';" \
+        "$ns" "$pg_host" "$pg_port" "$pg_db" "$pg_user" "$pg_password" >/dev/null
+}
+
 # -----------------------------------------------------------------------------
 # OSMO API helpers (for use when Envoy auth sidecar is present)
 # -----------------------------------------------------------------------------
