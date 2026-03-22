@@ -1,3 +1,5 @@
+# Launches an Isaac Lab job on Nebius AI serverless from an OSMO CPU-only helper pod.
+# Waits for the remote job to finish and reports the final serverless status in the task logs.
 workflow:
   name: osmo-isaac-rl-launcher
   pool: default
@@ -6,7 +8,6 @@ workflow:
     nebius-cli:
       cpu: 1
       memory: 2Gi
-      platform: L40S
 
   tasks:
     - name: trigger-isaac-l40s-job
@@ -18,7 +19,6 @@ workflow:
         PARENT_ID: "project-XXX"
         NEBIUS_IAM_TOKEN: "<nebius iam get-access-token result>"
         NGC_API_KEY: "nvapi-XXX"
-
       command:
         - bash
         - -lc
@@ -40,8 +40,10 @@ workflow:
             "$PARENT_ID" > /root/.nebius/config.yaml
 
           echo "--- 3. Launch Isaac Lab L40S job ---"
+          # The OSMO task is just a CPU launcher pod. The actual serverless
+          # target is selected by the Nebius AI job platform below.
           JOB_OUTPUT=$(nebius ai job create \
-            --name "isaac-reachy-$(date +%s)" \
+            --name "isaac-serverless-$(date +%s)" \
             --image "nvcr.io/nvidia/isaac-lab:2.3.2" \
             --registry-username "\$oauthtoken" \
             --registry-password "$NGC_API_KEY" \
