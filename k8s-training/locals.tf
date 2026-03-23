@@ -4,8 +4,15 @@ locals {
   fileexists(var.ssh_public_key.path) ? file(var.ssh_public_key.path) : null)
 
   filestore = {
-    mount_tag = "data"
+    mount_tag  = "data"
+    mount_path = var.filestore_mount_path
   }
+
+  filesystem_csi_chart_name          = "csi-mounted-fs-path"
+  filesystem_csi_storage_class_name  = "csi-mounted-fs-path-sc"
+  filesystem_csi_enabled             = local.shared-filesystem != null
+  filesystem_csi_data_dir            = "${trimsuffix(local.filestore.mount_path, "/")}/csi-mounted-fs-path-data/"
+  filesystem_csi_previous_default_sc = var.filesystem_csi.previous_default_storage_class_name
 
   regions_default = {
     eu-west1 = {
