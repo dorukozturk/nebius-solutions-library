@@ -423,3 +423,9 @@ variable "filesystem_csi" {
   })
   default = {}
 }
+
+variable "enable_opa_gatekeeper" {
+  description = "Enable OPA Gatekeeper"
+  type        = bool
+  default     = false
+}
