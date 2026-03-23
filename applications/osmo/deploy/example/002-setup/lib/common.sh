@@ -82,6 +82,303 @@ check_command() {
     command -v "$1" &>/dev/null
 }
 
+kubectl_real() {
+    local kubectl_bin
+    kubectl_bin=$(type -P kubectl 2>/dev/null || true)
+    if [[ -z "$kubectl_bin" ]]; then
+        echo "kubectl binary not found" >&2
+        return 127
+    fi
+    "$kubectl_bin" "$@"
+}
+
+# Shared kubectl wrapper for setup scripts.
+# For `kubectl apply`, disable schema validation and capture stdin-backed
+# manifests to a temp file so retries survive transient IAM / OpenAPI failures.
+kubectl() {
+    if [[ "${1:-}" != "apply" ]]; then
+        kubectl_real "$@"
+        return $?
+    fi
+
+    shift
+    local args=()
+    local tmp_file=""
+    local captured_stdin=false
+
+    while [[ $# -gt 0 ]]; do
+        if [[ "$1" == "-f" && "${2:-}" == "-" ]]; then
+            if [[ "$captured_stdin" == "false" ]]; then
+                tmp_file=$(mktemp "/tmp/kubectl-apply.XXXXXX.yaml")
+                cat >"$tmp_file"
+                captured_stdin=true
+            fi
+            args+=("-f" "$tmp_file")
+            shift 2
+            continue
+        fi
+        args+=("$1")
+        shift
+    done
+
+    if [[ "$captured_stdin" == "true" ]]; then
+        retry_with_backoff 3 2 10 kubectl_real apply --validate=false "${args[@]}"
+    else
+        retry_with_backoff 3 2 10 kubectl_real apply --validate=false "${args[@]}"
+    fi
+    local rc=$?
+
+    if [[ -n "$tmp_file" ]]; then
+        rm -f "$tmp_file" 2>/dev/null || true
+    fi
+
+    return $rc
+}
+
+# Check whether a local TCP port is already listening.
+is_local_port_in_use() {
+    local port="$1"
+
+    if check_command lsof; then
+        lsof -nP -iTCP:"$port" -sTCP:LISTEN &>/dev/null
+    elif check_command ss; then
+        ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]${port}$"
+    elif check_command netstat; then
+        netstat -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]${port}$"
+    else
+        return 1
+    fi
+}
+
+# Track script-owned port-forwards so a later rerun can clean them up and
+# reclaim the preferred local port.
+port_forward_state_file() {
+    local port="$1"
+    echo "/tmp/osmo-port-forward.${port}.state"
+}
+
+write_port_forward_state() {
+    local port="$1"
+    local pf_pid="$2"
+    local log_file="$3"
+    local ns="$4"
+    local resource="$5"
+    local remote_port="$6"
+    local description="$7"
+    local state_file
+
+    state_file=$(port_forward_state_file "$port")
+    cat >"$state_file" <<EOF
+pid=${pf_pid}
+log=${log_file}
+namespace=${ns}
+resource=${resource}
+remote_port=${remote_port}
+description=${description}
+EOF
+}
+
+remove_port_forward_state() {
+    local pf_pid="${1:-}"
+    local log_file="${2:-}"
+    local local_port="${3:-}"
+    local state_file
+    local state_pid
+    local state_log
+
+    if [[ -n "$local_port" ]]; then
+        rm -f "$(port_forward_state_file "$local_port")" 2>/dev/null || true
+        return 0
+    fi
+
+    for state_file in /tmp/osmo-port-forward.*.state; do
+        [[ -e "$state_file" ]] || break
+        state_pid=$(awk -F= '$1=="pid" {print substr($0, index($0, "=") + 1); exit}' "$state_file" 2>/dev/null)
+        state_log=$(awk -F= '$1=="log" {print substr($0, index($0, "=") + 1); exit}' "$state_file" 2>/dev/null)
+        if [[ -n "$pf_pid" && "$state_pid" == "$pf_pid" ]]; then
+            rm -f "$state_file" 2>/dev/null || true
+            break
+        fi
+        if [[ -n "$log_file" && "$state_log" == "$log_file" ]]; then
+            rm -f "$state_file" 2>/dev/null || true
+            break
+        fi
+    done
+}
+
+cleanup_script_owned_port_forward() {
+    local local_port="$1"
+    local state_file
+    local pf_pid
+    local log_file
+    local description
+    local cmd
+
+    state_file=$(port_forward_state_file "$local_port")
+    [[ -f "$state_file" ]] || return 1
+
+    pf_pid=$(awk -F= '$1=="pid" {print substr($0, index($0, "=") + 1); exit}' "$state_file" 2>/dev/null)
+    log_file=$(awk -F= '$1=="log" {print substr($0, index($0, "=") + 1); exit}' "$state_file" 2>/dev/null)
+    description=$(awk -F= '$1=="description" {print substr($0, index($0, "=") + 1); exit}' "$state_file" 2>/dev/null)
+
+    if [[ -z "$pf_pid" ]]; then
+        rm -f "$state_file" 2>/dev/null || true
+        return 1
+    fi
+
+    if ! kill -0 "$pf_pid" 2>/dev/null; then
+        stop_port_forward "$pf_pid" "$log_file" "$local_port"
+        return 0
+    fi
+
+    cmd=$(ps -p "$pf_pid" -o command= 2>/dev/null || true)
+    if [[ "$cmd" != *"kubectl port-forward"* ]]; then
+        rm -f "$state_file" 2>/dev/null || true
+        return 1
+    fi
+
+    log_warning "Cleaning up stale script-owned port-forward on local port ${local_port}${description:+ (${description})}..."
+    stop_port_forward "$pf_pid" "$log_file" "$local_port"
+    sleep 1
+    return 0
+}
+
+# Show the tail of a captured kubectl port-forward log.
+show_port_forward_log() {
+    local log_file="$1"
+    [[ -f "$log_file" ]] || return 0
+    tail -n 20 "$log_file" 2>/dev/null | sed 's/^/  /'
+}
+
+# Start a kubectl port-forward on the first available local port.
+# Sets PORT_FORWARD_PID, PORT_FORWARD_PORT, and PORT_FORWARD_LOG.
+start_kubectl_port_forward() {
+    local ns="$1"
+    local resource="$2"
+    local remote_port="$3"
+    local preferred_local_port="${4:-8080}"
+    local description="${5:-${resource}:${remote_port}}"
+    local max_port_tries="${6:-20}"
+    local log_file
+    local local_port
+    local pf_pid
+    local attempt
+
+    log_file=$(mktemp "/tmp/osmo-port-forward.XXXXXX")
+
+    for attempt in $(seq 0 "$max_port_tries"); do
+        local_port=$((preferred_local_port + attempt))
+
+        if is_local_port_in_use "$local_port"; then
+            cleanup_script_owned_port_forward "$local_port" >/dev/null 2>&1 || true
+        fi
+
+        if is_local_port_in_use "$local_port"; then
+            if [[ "$attempt" -eq 0 ]]; then
+                log_warning "Local port ${local_port} is already in use; trying another port for ${description}..."
+            fi
+            continue
+        fi
+
+        kubectl port-forward -n "$ns" "$resource" "${local_port}:${remote_port}" >"$log_file" 2>&1 &
+        pf_pid=$!
+        sleep 1
+
+        if kill -0 "$pf_pid" 2>/dev/null; then
+            PORT_FORWARD_PID=$pf_pid
+            PORT_FORWARD_PORT=$local_port
+            PORT_FORWARD_LOG=$log_file
+            export PORT_FORWARD_PID PORT_FORWARD_PORT PORT_FORWARD_LOG
+            write_port_forward_state "$local_port" "$pf_pid" "$log_file" "$ns" "$resource" "$remote_port" "$description"
+
+            if [[ "$local_port" != "$preferred_local_port" ]]; then
+                log_warning "Using local port ${local_port} for ${description} (preferred port ${preferred_local_port} was unavailable)"
+            fi
+            return 0
+        fi
+
+        wait "$pf_pid" 2>/dev/null || true
+        if grep -qiE 'address already in use|bind:.*in use|unable to listen on port' "$log_file" 2>/dev/null; then
+            if [[ "$attempt" -eq 0 ]]; then
+                log_warning "kubectl could not bind local port ${local_port}; trying another port for ${description}..."
+            fi
+            continue
+        fi
+
+        log_error "Failed to start port-forward for ${description}"
+        show_port_forward_log "$log_file"
+        rm -f "$log_file" 2>/dev/null || true
+        return 1
+    done
+
+    log_error "Could not find an available local port for ${description} starting at ${preferred_local_port}"
+    rm -f "$log_file" 2>/dev/null || true
+    return 1
+}
+
+# Stop a kubectl port-forward and clean up its log file.
+stop_port_forward() {
+    local pf_pid="${1:-${PORT_FORWARD_PID:-}}"
+    local log_file="${2:-${PORT_FORWARD_LOG:-}}"
+    local local_port="${3:-${PORT_FORWARD_PORT:-}}"
+
+    if [[ -n "$pf_pid" ]]; then
+        kill "$pf_pid" 2>/dev/null || true
+        wait "$pf_pid" 2>/dev/null || true
+    fi
+
+    if [[ -n "$log_file" ]]; then
+        rm -f "$log_file" 2>/dev/null || true
+    fi
+
+    remove_port_forward_state "$pf_pid" "$log_file" "$local_port"
+}
+
+# Return the HTTP status for a URL with bounded timeouts.
+http_status() {
+    local url="$1"
+
+    curl -sS \
+        --connect-timeout "${OSMO_CURL_CONNECT_TIMEOUT:-5}" \
+        --max-time "${OSMO_READY_CURL_MAX_TIME:-5}" \
+        -o /dev/null \
+        -w "%{http_code}" \
+        "$url" 2>/dev/null || echo "000"
+}
+
+# Wait for an HTTP endpoint to return a ready status code.
+wait_for_http_ready() {
+    local url="$1"
+    local timeout="${2:-30}"
+    local description="${3:-$url}"
+    local elapsed=0
+    local status="000"
+
+    while [[ "$elapsed" -lt "$timeout" ]]; do
+        status=$(http_status "$url")
+        if [[ "$status" =~ ^(200|401|403)$ ]]; then
+            return 0
+        fi
+
+        if [[ -n "${PORT_FORWARD_PID:-}" ]]; then
+            if ! kill -0 "${PORT_FORWARD_PID}" 2>/dev/null; then
+                log_error "Port-forward exited while waiting for ${description}"
+                show_port_forward_log "${PORT_FORWARD_LOG:-}"
+                return 1
+            fi
+        fi
+
+        sleep 1
+        ((elapsed += 1))
+    done
+
+    log_error "Timed out waiting for ${description} (last HTTP status: ${status})"
+    if [[ -n "${PORT_FORWARD_LOG:-}" ]]; then
+        show_port_forward_log "${PORT_FORWARD_LOG}"
+    fi
+    return 1
+}
+
 # Retry with exponential backoff
 retry_with_backoff() {
     local max_attempts=${1:-5}
@@ -145,7 +442,7 @@ check_kubectl() {
         return 1
     fi
 
-    if ! kubectl cluster-info &>/dev/null; then
+    if ! retry_with_backoff 3 2 10 kubectl cluster-info &>/dev/null; then
         log_error "Cannot connect to Kubernetes cluster"
         return 1
     fi
@@ -329,6 +626,395 @@ get_mysterybox_secret() {
     fi
 }
 
+normalize_nebius_storage_endpoint() {
+    local endpoint="$1"
+
+    endpoint="${endpoint%/}"
+    if [[ -z "$endpoint" ]]; then
+        return 1
+    fi
+
+    if [[ "$endpoint" =~ ^https://[^/:]+$ ]]; then
+        printf '%s:443\n' "$endpoint"
+    else
+        printf '%s\n' "$endpoint"
+    fi
+}
+
+get_kubernetes_secret_value() {
+    local ns="${1:-default}"
+    local secret_name="$2"
+    local key="$3"
+    local encoded
+
+    encoded=$(kubectl get secret "$secret_name" -n "$ns" -o jsonpath="{.data.${key}}" 2>/dev/null || echo "")
+    if [[ -n "$encoded" ]]; then
+        printf '%s' "$encoded" | base64 -d 2>/dev/null
+    fi
+}
+
+sync_osmo_storage_secret() {
+    local ns="${1:-osmo}"
+    local tf_dir="${2:-../001-iac}"
+    local access_key
+    local secret_ref_id
+    local secret_key
+
+    access_key=$(get_tf_output "storage_credentials.access_key_id" "$tf_dir" 2>/dev/null || echo "")
+    secret_ref_id=$(get_tf_output "storage_secret_reference_id" "$tf_dir" 2>/dev/null || echo "")
+    secret_key=""
+
+    if [[ -n "$secret_ref_id" ]]; then
+        secret_key=$(get_mysterybox_secret "$secret_ref_id" "secret" 2>/dev/null || echo "")
+    fi
+
+    if [[ -z "$access_key" || -z "$secret_key" ]]; then
+        log_error "Could not retrieve storage credentials from Terraform/MysteryBox"
+        return 1
+    fi
+
+    kubectl create secret generic osmo-storage \
+        --namespace "$ns" \
+        --from-literal=access-key-id="${access_key}" \
+        --from-literal=secret-access-key="${secret_key}" \
+        --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+
+    log_success "osmo-storage secret synced"
+}
+
+probe_nebius_bucket_rw() {
+    local ns="${1:-osmo}"
+    local bucket="$2"
+    local endpoint="$3"
+    local region="$4"
+    local secret_name="${5:-osmo-storage}"
+    local access_key
+    local secret_key
+    local probe_key
+    local tmp_file
+    local run_name
+    local probe_script
+
+    if [[ -z "$bucket" || -z "$endpoint" || -z "$region" ]]; then
+        log_error "Bucket probe requires bucket, endpoint, and region"
+        return 1
+    fi
+
+    endpoint=$(normalize_nebius_storage_endpoint "$endpoint") || return 1
+    access_key=$(get_kubernetes_secret_value "$ns" "$secret_name" "access-key-id")
+    secret_key=$(get_kubernetes_secret_value "$ns" "$secret_name" "secret-access-key")
+
+    if [[ -z "$access_key" || -z "$secret_key" ]]; then
+        log_error "Secret ${secret_name} in namespace ${ns} is missing storage credentials"
+        return 1
+    fi
+
+    probe_key="osmo-storage-probe-$(date +%s)-${RANDOM}"
+
+    if check_command aws; then
+        tmp_file=$(mktemp "/tmp/osmo-storage-probe.XXXXXX")
+        printf 'osmo-storage-probe\n' >"$tmp_file"
+
+        if AWS_EC2_METADATA_DISABLED=true \
+            AWS_ACCESS_KEY_ID="$access_key" \
+            AWS_SECRET_ACCESS_KEY="$secret_key" \
+            AWS_DEFAULT_REGION="$region" \
+            aws --endpoint-url "$endpoint" s3api head-bucket --bucket "$bucket" >/dev/null 2>&1 &&
+            AWS_EC2_METADATA_DISABLED=true \
+            AWS_ACCESS_KEY_ID="$access_key" \
+            AWS_SECRET_ACCESS_KEY="$secret_key" \
+            AWS_DEFAULT_REGION="$region" \
+            aws --endpoint-url "$endpoint" s3api put-object --bucket "$bucket" --key "$probe_key" --body "$tmp_file" >/dev/null 2>&1 &&
+            AWS_EC2_METADATA_DISABLED=true \
+            AWS_ACCESS_KEY_ID="$access_key" \
+            AWS_SECRET_ACCESS_KEY="$secret_key" \
+            AWS_DEFAULT_REGION="$region" \
+            aws --endpoint-url "$endpoint" s3api delete-object --bucket "$bucket" --key "$probe_key" >/dev/null 2>&1; then
+            rm -f "$tmp_file" 2>/dev/null || true
+            return 0
+        fi
+
+        rm -f "$tmp_file" 2>/dev/null || true
+    fi
+
+    run_name="osmo-s3-probe-${RANDOM}${RANDOM}"
+    probe_script=$(cat <<EOF
+set -e
+aws --endpoint-url "$endpoint" s3api head-bucket --bucket "$bucket" >/dev/null
+aws --endpoint-url "$endpoint" s3api put-object --bucket "$bucket" --key "$probe_key" --body /etc/hosts >/dev/null
+aws --endpoint-url "$endpoint" s3api delete-object --bucket "$bucket" --key "$probe_key" >/dev/null
+echo S3_PROBE_OK
+EOF
+)
+
+    if kubectl run "$run_name" \
+        --rm --restart=Never -i \
+        -n "$ns" \
+        --image=amazon/aws-cli:2.15.0 \
+        --env="AWS_ACCESS_KEY_ID=${access_key}" \
+        --env="AWS_SECRET_ACCESS_KEY=${secret_key}" \
+        --env="AWS_DEFAULT_REGION=${region}" \
+        --env="AWS_EC2_METADATA_DISABLED=true" \
+        --command -- \
+        sh -lc "$probe_script" >/tmp/_osmo_s3_probe.out 2>/tmp/_osmo_s3_probe.err; then
+        if grep -q "S3_PROBE_OK" /tmp/_osmo_s3_probe.out 2>/dev/null; then
+            rm -f /tmp/_osmo_s3_probe.out /tmp/_osmo_s3_probe.err 2>/dev/null || true
+            return 0
+        fi
+    fi
+
+    cat /tmp/_osmo_s3_probe.out 2>/dev/null >&2 || true
+    cat /tmp/_osmo_s3_probe.err 2>/dev/null >&2 || true
+    rm -f /tmp/_osmo_s3_probe.out /tmp/_osmo_s3_probe.err 2>/dev/null || true
+    return 1
+}
+
+# Read the Postgres connection settings from the live osmo-service deployment.
+discover_osmo_service_postgres_config() {
+    local ns="${1:-osmo}"
+    local deployment_json
+    local pg_host
+    local pg_port
+    local pg_db
+    local pg_user
+    local pg_password
+
+    deployment_json=$(kubectl get deployment osmo-service -n "$ns" -o json 2>/dev/null) || {
+        log_error "Could not read deployment/osmo-service in namespace ${ns}"
+        return 1
+    }
+
+    pg_host=$(echo "$deployment_json" | jq -r '[.spec.template.spec.containers[] | select(.name=="osmo-service") | .env[]? | select(.name=="OSMO_POSTGRES_HOST") | .value][0] // empty')
+    pg_port=$(echo "$deployment_json" | jq -r '[.spec.template.spec.containers[] | select(.name=="osmo-service") | .env[]? | select(.name=="OSMO_POSTGRES_PORT") | .value][0] // empty')
+    pg_db=$(echo "$deployment_json" | jq -r '[.spec.template.spec.containers[] | select(.name=="osmo-service") | .env[]? | select(.name=="OSMO_POSTGRES_DATABASE") | .value][0] // empty')
+    pg_user=$(echo "$deployment_json" | jq -r '[.spec.template.spec.containers[] | select(.name=="osmo-service") | .env[]? | select(.name=="OSMO_POSTGRES_USER") | .value][0] // empty')
+    pg_password=$(kubectl get secret db-secret -n "$ns" -o jsonpath='{.data.db-password}' 2>/dev/null | base64 -d)
+
+    if [[ -z "$pg_host" || -z "$pg_port" || -z "$pg_db" || -z "$pg_user" || -z "$pg_password" ]]; then
+        log_error "Could not discover OSMO Postgres settings from the live cluster"
+        return 1
+    fi
+
+    printf '%s\t%s\t%s\t%s\t%s\n' "$pg_host" "$pg_port" "$pg_db" "$pg_user" "$pg_password"
+}
+
+sanitize_kubectl_run_output() {
+    awk '
+        /^All commands and output from this session/ { next }
+        /^If you don/ { next }
+        /^warning: couldn.t attach to pod/ { next }
+        /^pod ".*" deleted from .* namespace$/ { next }
+        /^pod .* terminated \(Completed\)$/ { next }
+        /^pod .* terminated \(Error\)$/ { next }
+        { print }
+    '
+}
+
+# Run a SQL statement against the live OSMO Postgres database via an ephemeral psql pod.
+run_osmo_postgres_sql() {
+    local sql="$1"
+    local ns="${2:-osmo}"
+    local pg_host="${3:-${POSTGRES_HOST:-}}"
+    local pg_port="${4:-${POSTGRES_PORT:-}}"
+    local pg_db="${5:-${POSTGRES_DB:-${OSMO_POSTGRES_DATABASE:-osmo}}}"
+    local pg_user="${6:-${POSTGRES_USER:-}}"
+    local pg_password="${7:-${POSTGRES_PASSWORD:-}}"
+    local discovered=""
+    local attempt
+    local run_name
+    local output
+    local cleaned
+
+    if [[ -z "$pg_host" || -z "$pg_port" || -z "$pg_db" || -z "$pg_user" || -z "$pg_password" ]]; then
+        discovered=$(discover_osmo_service_postgres_config "$ns") || return 1
+        IFS=$'\t' read -r pg_host pg_port pg_db pg_user pg_password <<<"$discovered"
+    fi
+
+    for attempt in 1 2 3; do
+        run_name="osmo-psql-${RANDOM}${RANDOM}"
+        log_info "Attempt ${attempt}/3: running PostgreSQL config query..."
+
+        if output=$(kubectl run "$run_name" \
+            --rm --restart=Never -i \
+            -n "$ns" \
+            --image=postgres:16-alpine \
+            --env="PGPASSWORD=${pg_password}" \
+            --command -- \
+            psql \
+                -h "$pg_host" \
+                -p "$pg_port" \
+                -U "$pg_user" \
+                -d "$pg_db" \
+                -v ON_ERROR_STOP=1 \
+                -qAtc "$sql" 2>&1); then
+            cleaned=$(printf '%s\n' "$output" | sanitize_kubectl_run_output | sed '/^$/d')
+            [[ -n "$cleaned" ]] && printf '%s\n' "$cleaned"
+            return 0
+        fi
+
+        cleaned=$(printf '%s\n' "$output" | sanitize_kubectl_run_output | sed '/^$/d')
+        [[ -n "$cleaned" ]] && printf '%s\n' "$cleaned" >&2
+
+        if [[ "$attempt" -lt 3 ]]; then
+            log_warning "PostgreSQL query failed, retrying in $((attempt * 2))s..."
+            sleep $((attempt * 2))
+        fi
+    done
+
+    log_error "Failed to run PostgreSQL query after 3 attempts"
+    return 1
+}
+
+sql_escape_literal() {
+    printf '%s' "$1" | sed "s/'/''/g"
+}
+
+get_osmo_config_value_db() {
+    local ns="${1:-osmo}"
+    local config_type="$2"
+    local key="$3"
+    local pg_host="${4:-${POSTGRES_HOST:-}}"
+    local pg_port="${5:-${POSTGRES_PORT:-}}"
+    local pg_db="${6:-${POSTGRES_DB:-${OSMO_POSTGRES_DATABASE:-osmo}}}"
+    local pg_user="${7:-${POSTGRES_USER:-}}"
+    local pg_password="${8:-${POSTGRES_PASSWORD:-}}"
+    local escaped_type
+    local escaped_key
+
+    escaped_type=$(sql_escape_literal "$config_type")
+    escaped_key=$(sql_escape_literal "$key")
+    run_osmo_postgres_sql \
+        "select value from configs where type = '${escaped_type}' and key = '${escaped_key}';" \
+        "$ns" "$pg_host" "$pg_port" "$pg_db" "$pg_user" "$pg_password"
+}
+
+osmo_config_key_exists_db() {
+    local ns="${1:-osmo}"
+    local config_type="$2"
+    local key="$3"
+    local pg_host="${4:-${POSTGRES_HOST:-}}"
+    local pg_port="${5:-${POSTGRES_PORT:-}}"
+    local pg_db="${6:-${POSTGRES_DB:-${OSMO_POSTGRES_DATABASE:-osmo}}}"
+    local pg_user="${7:-${POSTGRES_USER:-}}"
+    local pg_password="${8:-${POSTGRES_PASSWORD:-}}"
+    local value
+
+    value=$(get_osmo_config_value_db "$ns" "$config_type" "$key" "$pg_host" "$pg_port" "$pg_db" "$pg_user" "$pg_password" 2>/dev/null || true)
+    [[ -n "$value" ]]
+}
+
+upsert_osmo_config_value_db() {
+    local ns="${1:-osmo}"
+    local config_type="$2"
+    local key="$3"
+    local value="$4"
+    local pg_host="${5:-${POSTGRES_HOST:-}}"
+    local pg_port="${6:-${POSTGRES_PORT:-}}"
+    local pg_db="${7:-${POSTGRES_DB:-${OSMO_POSTGRES_DATABASE:-osmo}}}"
+    local pg_user="${8:-${POSTGRES_USER:-}}"
+    local pg_password="${9:-${POSTGRES_PASSWORD:-}}"
+    local escaped_type
+    local escaped_key
+    local escaped_value
+
+    if [[ -z "$config_type" || -z "$key" ]]; then
+        log_error "config_type and key must not be empty"
+        return 1
+    fi
+
+    escaped_type=$(sql_escape_literal "$config_type")
+    escaped_key=$(sql_escape_literal "$key")
+    escaped_value=$(sql_escape_literal "$value")
+    run_osmo_postgres_sql \
+        "with updated as (
+            update configs
+               set value = '${escaped_value}'
+             where type = '${escaped_type}'
+               and key = '${escaped_key}'
+         returning 1
+        )
+        insert into configs(key, value, type)
+        select '${escaped_key}', '${escaped_value}', '${escaped_type}'
+         where not exists (select 1 from updated);" \
+        "$ns" "$pg_host" "$pg_port" "$pg_db" "$pg_user" "$pg_password" >/dev/null
+}
+
+delete_osmo_config_value_db() {
+    local ns="${1:-osmo}"
+    local config_type="$2"
+    local key="$3"
+    local pg_host="${4:-${POSTGRES_HOST:-}}"
+    local pg_port="${5:-${POSTGRES_PORT:-}}"
+    local pg_db="${6:-${POSTGRES_DB:-${OSMO_POSTGRES_DATABASE:-osmo}}}"
+    local pg_user="${7:-${POSTGRES_USER:-}}"
+    local pg_password="${8:-${POSTGRES_PASSWORD:-}}"
+    local escaped_type
+    local escaped_key
+
+    escaped_type=$(sql_escape_literal "$config_type")
+    escaped_key=$(sql_escape_literal "$key")
+    run_osmo_postgres_sql \
+        "delete from configs where type = '${escaped_type}' and key = '${escaped_key}';" \
+        "$ns" "$pg_host" "$pg_port" "$pg_db" "$pg_user" "$pg_password" >/dev/null
+}
+
+get_osmo_service_config_value_db() {
+    local ns="${1:-osmo}"
+    local key="$2"
+    local pg_host="${3:-${POSTGRES_HOST:-}}"
+    local pg_port="${4:-${POSTGRES_PORT:-}}"
+    local pg_db="${5:-${POSTGRES_DB:-${OSMO_POSTGRES_DATABASE:-osmo}}}"
+    local pg_user="${6:-${POSTGRES_USER:-}}"
+    local pg_password="${7:-${POSTGRES_PASSWORD:-}}"
+
+    get_osmo_config_value_db "$ns" SERVICE "$key" "$pg_host" "$pg_port" "$pg_db" "$pg_user" "$pg_password"
+}
+
+osmo_service_config_key_exists() {
+    local ns="${1:-osmo}"
+    local key="$2"
+    local pg_host="${3:-${POSTGRES_HOST:-}}"
+    local pg_port="${4:-${POSTGRES_PORT:-}}"
+    local pg_db="${5:-${POSTGRES_DB:-${OSMO_POSTGRES_DATABASE:-osmo}}}"
+    local pg_user="${6:-${POSTGRES_USER:-}}"
+    local pg_password="${7:-${POSTGRES_PASSWORD:-}}"
+
+    osmo_config_key_exists_db "$ns" SERVICE "$key" "$pg_host" "$pg_port" "$pg_db" "$pg_user" "$pg_password"
+}
+
+# Upsert SERVICE.service_base_url directly in Postgres.
+# This avoids the public SERVICE PATCH path, which can corrupt service_auth on reruns.
+upsert_osmo_service_base_url_db() {
+    local ns="${1:-osmo}"
+    local service_url="$2"
+    local pg_host="${3:-${POSTGRES_HOST:-}}"
+    local pg_port="${4:-${POSTGRES_PORT:-}}"
+    local pg_db="${5:-${POSTGRES_DB:-${OSMO_POSTGRES_DATABASE:-osmo}}}"
+    local pg_user="${6:-${POSTGRES_USER:-}}"
+    local pg_password="${7:-${POSTGRES_PASSWORD:-}}"
+
+    if [[ -z "$service_url" ]]; then
+        log_error "service_url must not be empty"
+        return 1
+    fi
+
+    upsert_osmo_config_value_db "$ns" SERVICE service_base_url "$service_url" \
+        "$pg_host" "$pg_port" "$pg_db" "$pg_user" "$pg_password"
+}
+
+# Delete SERVICE.service_auth so osmo-service regenerates it on restart.
+delete_osmo_service_auth_db() {
+    local ns="${1:-osmo}"
+    local pg_host="${2:-${POSTGRES_HOST:-}}"
+    local pg_port="${3:-${POSTGRES_PORT:-}}"
+    local pg_db="${4:-${POSTGRES_DB:-${OSMO_POSTGRES_DATABASE:-osmo}}}"
+    local pg_user="${5:-${POSTGRES_USER:-}}"
+    local pg_password="${6:-${POSTGRES_PASSWORD:-}}"
+
+    delete_osmo_config_value_db "$ns" SERVICE service_auth \
+        "$pg_host" "$pg_port" "$pg_db" "$pg_user" "$pg_password"
+}
+
 # -----------------------------------------------------------------------------
 # OSMO API helpers (for use when Envoy auth sidecar is present)
 # -----------------------------------------------------------------------------
@@ -362,17 +1048,43 @@ start_osmo_port_forward() {
 
     if has_envoy_sidecar "$ns" "app=osmo-service"; then
         local pod_name
-        pod_name=$(kubectl get pod -n "$ns" -l app=osmo-service -o jsonpath='{.items[0].metadata.name}')
+        # Prefer a Running pod so we don't port-forward to one stuck in ContainerCreating
+        pod_name=$(kubectl get pod -n "$ns" -l app=osmo-service --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+        [[ -z "$pod_name" ]] && pod_name=$(kubectl get pod -n "$ns" -l app=osmo-service -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
         log_info "Envoy sidecar detected -- port-forwarding to pod/${pod_name}:8000 (bypassing auth)..."
-        kubectl port-forward -n "$ns" "pod/${pod_name}" "${local_port}:8000" &>/dev/null &
+        start_kubectl_port_forward "$ns" "pod/${pod_name}" 8000 "$local_port" "OSMO API pod/${pod_name}:8000" || return 1
         _OSMO_AUTH_BYPASS=true
     else
         log_info "No Envoy sidecar -- port-forwarding to svc/osmo-service:80..."
-        kubectl port-forward -n "$ns" svc/osmo-service "${local_port}:80" &>/dev/null &
+        start_kubectl_port_forward "$ns" svc/osmo-service 80 "$local_port" "OSMO API svc/osmo-service:80" || return 1
         _OSMO_AUTH_BYPASS=false
     fi
-    PORT_FORWARD_PID=$!
     export _OSMO_AUTH_BYPASS
+}
+
+# Wait for the forwarded OSMO API to respond.
+wait_for_osmo_api() {
+    local port="${1:-${PORT_FORWARD_PORT:-8080}}"
+    local timeout="${2:-30}"
+    wait_for_http_ready "http://localhost:${port}/api/version" "$timeout" "OSMO API"
+}
+
+# Start a port-forward and wait until the OSMO API responds.
+# Sets OSMO_API_PORT and OSMO_API_URL.
+start_osmo_api_session() {
+    local ns="${1:-osmo}"
+    local preferred_local_port="${2:-8080}"
+    local timeout="${3:-30}"
+
+    start_osmo_port_forward "$ns" "$preferred_local_port" || return 1
+    wait_for_osmo_api "${PORT_FORWARD_PORT}" "$timeout" || {
+        stop_port_forward
+        return 1
+    }
+
+    OSMO_API_PORT="${PORT_FORWARD_PORT}"
+    OSMO_API_URL="http://localhost:${OSMO_API_PORT}"
+    export OSMO_API_PORT OSMO_API_URL
 }
 
 # Make an authenticated curl call to the OSMO API.
@@ -390,7 +1102,10 @@ osmo_curl() {
         auth_args+=(-H "x-osmo-user: osmo-admin" -H "x-osmo-roles: osmo-admin,osmo-user")
     fi
 
-    curl -s -X "$method" "$url" \
+    curl -sS \
+        --connect-timeout "${OSMO_CURL_CONNECT_TIMEOUT:-5}" \
+        --max-time "${OSMO_CURL_MAX_TIME:-120}" \
+        -X "$method" "$url" \
         -H "Content-Type: application/json" \
         "${auth_args[@]}" \
         "$@"

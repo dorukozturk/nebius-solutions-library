@@ -55,29 +55,15 @@ check_kubectl || exit 1
 # -----------------------------------------------------------------------------
 log_info "Starting port-forward to OSMO service..."
 
-start_osmo_port_forward "${OSMO_NAMESPACE}" 8080
+start_osmo_api_session "${OSMO_NAMESPACE}" 8080 30 || exit 1
+OSMO_URL="${OSMO_API_URL}"
 
 cleanup_port_forward() {
-    if [[ -n "${PORT_FORWARD_PID:-}" ]]; then
-        kill $PORT_FORWARD_PID 2>/dev/null || true
-        wait $PORT_FORWARD_PID 2>/dev/null || true
-    fi
+    stop_port_forward
 }
 trap cleanup_port_forward EXIT
 
-# Wait for port-forward to be ready
-log_info "Waiting for port-forward to be ready..."
-max_wait=30
-elapsed=0
-while ! curl -s -o /dev/null -w "%{http_code}" "${OSMO_URL}/api/version" 2>/dev/null | grep -q "200\|401\|403"; do
-    sleep 1
-    ((elapsed += 1))
-    if [[ $elapsed -ge $max_wait ]]; then
-        log_error "Port-forward failed to start within ${max_wait}s"
-        exit 1
-    fi
-done
-log_success "Port-forward ready"
+log_success "Port-forward ready at ${OSMO_URL}"
 
 # -----------------------------------------------------------------------------
 # Step 1: Fix default_user pod template (remove GPU resources)
@@ -174,7 +160,13 @@ osmo_curl GET "${OSMO_URL}/api/configs/pod_template" | jq 'keys'
 
 echo ""
 echo "Platform '${GPU_PLATFORM_NAME}' config:"
-osmo_curl GET "${OSMO_URL}/api/configs/pool/default" | jq ".platforms.${GPU_PLATFORM_NAME}"
+osmo_curl GET "${OSMO_URL}/api/configs/pool/default" | jq --arg platform "${GPU_PLATFORM_NAME}" '
+  if (.platforms | type) == "object" then
+    .platforms[$platform]
+  else
+    (.platforms[]? | select(.name == $platform))
+  end
+'
 
 # -----------------------------------------------------------------------------
 # Step 5: Check GPU resources
@@ -183,20 +175,63 @@ log_info "Checking GPU resources..."
 sleep 3  # Wait for backend to pick up changes
 
 RESOURCE_JSON=$(osmo_curl GET "${OSMO_URL}/api/resources" 2>/dev/null || echo '{}')
-RESOURCE_COUNT=$(echo "$RESOURCE_JSON" | jq '[(.resources // [])[] | select(.allocatable_fields.gpu != null)] | length' 2>/dev/null || echo "0")
+RESOURCE_COUNT=$(echo "$RESOURCE_JSON" | jq '
+  (
+    if type == "array" then
+      .
+    else
+      (.resources // [])
+    end
+  )
+  | map(select((.allocatable_fields.gpu // .gpu // null) != null))
+  | length
+' 2>/dev/null || echo "0")
 echo "GPU nodes visible to OSMO: ${RESOURCE_COUNT}"
 
 if [[ "$RESOURCE_COUNT" -gt 0 ]]; then
     echo ""
     echo "GPU resources:"
-    echo "$RESOURCE_JSON" | jq '.resources[] | select(.allocatable_fields.gpu != null) | {name: .name, gpu: .allocatable_fields.gpu, cpu: .allocatable_fields.cpu, memory: .allocatable_fields.memory}'
+    echo "$RESOURCE_JSON" | jq '
+      (
+        if type == "array" then
+          .
+        else
+          (.resources // [])
+        end
+      )[]
+      | select((.allocatable_fields.gpu // .gpu // null) != null)
+      | {
+          name: .name,
+          pool: (.pool_name // .pool // null),
+          platform: (.platform_name // .platform // null),
+          gpu: (.allocatable_fields.gpu // .gpu // null),
+          cpu: (.allocatable_fields.cpu // .cpu // null),
+          memory: (.allocatable_fields.memory // .memory // null)
+        }
+    '
 fi
 
 # -----------------------------------------------------------------------------
 # Step 6: Set default pool profile
 # -----------------------------------------------------------------------------
+# Default pool is a per-user setting. When using port-forward with auth bypass,
+# the OSMO CLI (osmo profile set pool) is not authenticated, so it may get 403.
+# Try API first with auth bypass; fall back to CLI and then to a clear message.
 log_info "Setting default pool to 'default'..."
-osmo profile set pool default 2>/dev/null && log_success "Default pool set" || log_warning "Could not set default pool (set manually: osmo profile set pool default)"
+_set_pool_ok=false
+_resp=$(osmo_curl PATCH "${OSMO_URL}/api/users/me" -d '{"default_pool":"default"}' -w "\n%{http_code}" 2>/dev/null) || true
+_http_code=$(echo "$_resp" | tail -n1)
+if [[ "$_http_code" =~ ^2 ]]; then
+    _set_pool_ok=true
+fi
+if [[ "$_set_pool_ok" != "true" ]]; then
+    osmo profile set pool default 2>/dev/null && _set_pool_ok=true || true
+fi
+if [[ "$_set_pool_ok" == "true" ]]; then
+    log_success "Default pool set"
+else
+    log_warning "Could not set default pool (403 is expected when using port-forward). Set once from the OSMO UI (Settings) or after logging in: osmo login <OSMO_URL> then osmo profile set pool default"
+fi
 
 # -----------------------------------------------------------------------------
 # Done

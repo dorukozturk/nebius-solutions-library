@@ -1,5 +1,5 @@
 #!/bin/bash
-# Configure BACKEND scheduler_settings (KAI scheduler + coscheduling) for Nebius OSMO.
+# Configure BACKEND scheduler_settings (KAI scheduler) for Nebius OSMO.
 # Run after 05-deploy-osmo-backend.sh once the backend is ONLINE.
 # Option A: Patch existing backend (keeps router_address, etc.) – default.
 # Option B: Apply config from config/scheduler-config.template.json (set ROUTER_ADDRESS, etc.).
@@ -22,7 +22,7 @@ USE_TEMPLATE=false
 
 echo ""
 echo "========================================"
-echo "  Configure BACKEND scheduler (KAI + coscheduling)"
+echo "  Configure BACKEND scheduler (KAI)"
 echo "========================================"
 echo ""
 
@@ -33,30 +33,17 @@ command -v jq &>/dev/null || { log_error "jq is required"; exit 1; }
 # Start port-forward and login
 # -----------------------------------------------------------------------------
 log_info "Starting port-forward to OSMO service..."
-start_osmo_port_forward "${OSMO_NAMESPACE}" 8080
+start_osmo_api_session "${OSMO_NAMESPACE}" 8080 30 || exit 1
+OSMO_URL="${OSMO_API_URL}"
 
 cleanup_port_forward() {
-    if [[ -n "${PORT_FORWARD_PID:-}" ]]; then
-        kill "$PORT_FORWARD_PID" 2>/dev/null || true
-        wait "$PORT_FORWARD_PID" 2>/dev/null || true
-    fi
+    stop_port_forward
 }
 trap cleanup_port_forward EXIT
 
-log_info "Waiting for port-forward..."
-max_wait=30
-elapsed=0
-while ! curl -s -o /dev/null -w "%{http_code}" "${OSMO_URL}/api/version" 2>/dev/null | grep -q "200\|401\|403"; do
-    sleep 1
-    ((elapsed += 1))
-    if [[ $elapsed -ge $max_wait ]]; then
-        log_error "Port-forward failed to start within ${max_wait}s"
-        exit 1
-    fi
-done
-log_success "Port-forward ready"
+log_success "Port-forward ready at ${OSMO_URL}"
 
-osmo_login 8080 || true
+osmo_login "${OSMO_API_PORT}" || true
 
 # -----------------------------------------------------------------------------
 # Build backend config and apply
@@ -81,27 +68,27 @@ if [[ "$USE_TEMPLATE" == "true" && -f "${CONFIG_DIR}/scheduler-config.template.j
     mkdir -p "${CONFIG_DIR}/out"
     envsubst < "${CONFIG_DIR}/scheduler-config.template.json" > "${CONFIG_DIR}/out/scheduler-config.json"
     BACKEND_FILE="${CONFIG_DIR}/out/scheduler-config.json"
-    if ! osmo config update BACKEND "$BACKEND_NAME" --file "$BACKEND_FILE" --description "Backend $BACKEND_NAME scheduler (KAI + coscheduling)"; then
+    if ! osmo config update BACKEND "$BACKEND_NAME" --file "$BACKEND_FILE" --description "Backend $BACKEND_NAME scheduler (KAI)"; then
         log_error "Failed to apply backend config from template"
         exit 1
     fi
 else
     # Option A: Patch existing backend (keep router_address and other fields)
-    log_info "Patching existing backend '$BACKEND_NAME' scheduler_settings (KAI + coscheduling)..."
+    log_info "Patching existing backend '$BACKEND_NAME' scheduler_settings (KAI)..."
     BACKEND_JSON=$(osmo_curl GET "${OSMO_URL}/api/configs/backend" 2>/dev/null || true)
     if [[ -z "$BACKEND_JSON" ]]; then
         log_error "Could not get backend config. Is the backend registered? Run: osmo config show BACKEND"
         exit 1
     fi
     BACKEND_OBJECT=$(echo "$BACKEND_JSON" | jq -c --arg name "$BACKEND_NAME" \
-        '.backends[] | select(.name == $name) | . + {scheduler_settings: {"scheduler_type":"kai","scheduler_name":"kai-scheduler","coscheduling":true,"scheduler_timeout":30}}')
+        '.backends[] | select(.name == $name) | . + {scheduler_settings: {"scheduler_type":"kai","scheduler_name":"kai-scheduler","scheduler_timeout":30}}')
     if [[ -z "$BACKEND_OBJECT" || "$BACKEND_OBJECT" == "null" ]]; then
         log_error "Backend '$BACKEND_NAME' not found in config. Available: $(echo "$BACKEND_JSON" | jq -r '.backends[].name' 2>/dev/null | tr '\n' ' ')"
         exit 1
     fi
     TMP_FILE=$(mktemp)
     echo "$BACKEND_OBJECT" > "$TMP_FILE"
-    if ! osmo config update BACKEND "$BACKEND_NAME" --file "$TMP_FILE" --description "Backend $BACKEND_NAME scheduler (KAI + coscheduling)"; then
+    if ! osmo config update BACKEND "$BACKEND_NAME" --file "$TMP_FILE" --description "Backend $BACKEND_NAME scheduler (KAI)"; then
         rm -f "$TMP_FILE"
         log_error "Failed to update backend config"
         exit 1
@@ -109,10 +96,32 @@ else
     rm -f "$TMP_FILE"
 fi
 
+# -----------------------------------------------------------------------------
+# Verify supported scheduler fields
+# -----------------------------------------------------------------------------
+UPDATED_BACKEND_JSON=$(osmo_curl GET "${OSMO_URL}/api/configs/backend" 2>/dev/null || true)
+UPDATED_BACKEND=$(echo "$UPDATED_BACKEND_JSON" | jq -c --arg name "$BACKEND_NAME" '.backends[] | select(.name == $name)' 2>/dev/null || true)
+
+if [[ -z "$UPDATED_BACKEND" || "$UPDATED_BACKEND" == "null" ]]; then
+    log_error "Backend '$BACKEND_NAME' not found after update"
+    exit 1
+fi
+
+UPDATED_SCHEDULER_TYPE=$(echo "$UPDATED_BACKEND" | jq -r '.scheduler_settings.scheduler_type // ""')
+UPDATED_SCHEDULER_NAME=$(echo "$UPDATED_BACKEND" | jq -r '.scheduler_settings.scheduler_name // ""')
+UPDATED_SCHEDULER_TIMEOUT=$(echo "$UPDATED_BACKEND" | jq -r '.scheduler_settings.scheduler_timeout // ""')
+
+if [[ "$UPDATED_SCHEDULER_TYPE" != "kai" || "$UPDATED_SCHEDULER_NAME" != "kai-scheduler" || "$UPDATED_SCHEDULER_TIMEOUT" != "30" ]]; then
+    log_error "Backend scheduler verification failed"
+    echo "$UPDATED_BACKEND" | jq '.scheduler_settings'
+    exit 1
+fi
+
 log_success "BACKEND scheduler configuration applied"
 echo ""
 echo "Verify:"
 echo "  osmo config show BACKEND ${BACKEND_NAME}"
 echo ""
-echo "You should see scheduler_settings: scheduler_type=kai, coscheduling=true"
+echo "You should see scheduler_settings: scheduler_type=kai, scheduler_name=kai-scheduler, scheduler_timeout=30"
+echo "Note: current OSMO 6.2.x backend config does not persist a separate coscheduling field."
 echo ""

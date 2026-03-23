@@ -3,7 +3,7 @@
 # OSMO Installation Verification Script
 # =============================================================================
 # Checks that all required components are properly configured:
-#   1. GPU Operator running with driver enabled, version 580.95.05
+#   1. GPU Operator running with driver enabled, matching the configured driver.version
 #   2. /mnt/data mounted on all nodes
 #   3. 64Gi /dev/shm pod template configured in OSMO
 #   4. Redis sized correctly (8 vCPU, ~52.82Gi mem, 50Gi PVC)
@@ -17,7 +17,7 @@
 #   - jq installed
 #   - curl installed
 #   - OSMO CLI installed and accessible (for osmo login)
-#   - Port 8080 available locally (used for port-forward to OSMO service)
+#   - No fixed local port requirement; the script auto-selects a free port for OSMO port-forwarding
 #   - NEBIUS_REGION set (run: source ../000-prerequisites/nebius-env-init.sh)
 #
 # Usage:
@@ -27,7 +27,7 @@
 #   OSMO_URL                 OSMO API URL (default: http://localhost:8080)
 #   OSMO_NAMESPACE           Namespace where OSMO is deployed (default: osmo)
 #   GPU_OPERATOR_NAMESPACE   Namespace for GPU Operator (default: gpu-operator)
-#   EXPECTED_DRIVER_VERSION  Expected NVIDIA driver version (default: 580.95.05)
+#   EXPECTED_DRIVER_VERSION  Expected NVIDIA driver version override (default: use GPU Operator driver.version)
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
@@ -36,7 +36,7 @@ source "${SCRIPT_DIR}/defaults.sh"
 
 OSMO_URL="${OSMO_URL:-http://localhost:8080}"
 OSMO_NAMESPACE="${OSMO_NAMESPACE:-osmo}"
-EXPECTED_DRIVER_VERSION="${EXPECTED_DRIVER_VERSION:-580.95.05}"
+EXPECTED_DRIVER_VERSION="${EXPECTED_DRIVER_VERSION:-}"
 MIN_REDIS_CPU=8
 MIN_REDIS_MEMORY_GI=50
 MIN_REDIS_PVC_GI=50
@@ -97,14 +97,14 @@ fi
 
 if [[ "$PREREQ_OK" != "true" ]]; then
     log_error "Missing prerequisites. Fix the above and re-run."
-    return 2>/dev/null || true
+    return 1 2>/dev/null || exit 1
 fi
 
 # Verify kubectl can reach the cluster
 if ! kubectl cluster-info &>/dev/null; then
     log_error "kubectl cannot reach the cluster. Connect first:"
     echo "  nebius mk8s cluster get-credentials --id <cluster-id> --external"
-    return 2>/dev/null || true
+    return 1 2>/dev/null || exit 1
 fi
 
 CLUSTER_CONTEXT=$(kubectl config current-context 2>/dev/null || echo "unknown")
@@ -124,7 +124,14 @@ else
 fi
 
 # Check driver is enabled (not disabled via --set driver.enabled=false)
-DRIVER_ENABLED=$(helm get values gpu-operator -n "${GPU_OPERATOR_NAMESPACE:-gpu-operator}" -a -o json 2>/dev/null | jq -r '.driver.enabled // empty' || echo "unknown")
+GPU_OPERATOR_VALUES=$(helm get values gpu-operator -n "${GPU_OPERATOR_NAMESPACE:-gpu-operator}" -a -o json 2>/dev/null || echo '{}')
+DRIVER_ENABLED=$(echo "$GPU_OPERATOR_VALUES" | jq -r '.driver.enabled // empty' 2>/dev/null || echo "unknown")
+CONFIGURED_DRIVER_VERSION=$(echo "$GPU_OPERATOR_VALUES" | jq -r '.driver.version // empty' 2>/dev/null || echo "")
+
+if [[ -z "$EXPECTED_DRIVER_VERSION" && -n "$CONFIGURED_DRIVER_VERSION" ]]; then
+    EXPECTED_DRIVER_VERSION="$CONFIGURED_DRIVER_VERSION"
+fi
+
 if [[ "$DRIVER_ENABLED" == "true" ]]; then
     check_pass "GPU driver is enabled in GPU Operator"
 elif [[ "$DRIVER_ENABLED" == "false" ]]; then
@@ -149,8 +156,10 @@ else
 
     if [[ -z "$NVIDIA_SMI_OUTPUT" ]]; then
         check_fail "Could not run nvidia-smi in pod ${DRIVER_POD}"
-    elif [[ "$NVIDIA_SMI_OUTPUT" == "$EXPECTED_DRIVER_VERSION" ]]; then
+    elif [[ -n "$EXPECTED_DRIVER_VERSION" && "$NVIDIA_SMI_OUTPUT" == "$EXPECTED_DRIVER_VERSION" ]]; then
         check_pass "nvidia-smi driver version: ${NVIDIA_SMI_OUTPUT} (on ${DRIVER_NODE})"
+    elif [[ -z "$EXPECTED_DRIVER_VERSION" ]]; then
+        check_warn "nvidia-smi driver version: ${NVIDIA_SMI_OUTPUT} (no expected version configured)"
     else
         check_fail "nvidia-smi driver version: ${NVIDIA_SMI_OUTPUT} (expected ${EXPECTED_DRIVER_VERSION}, on ${DRIVER_NODE})"
     fi
@@ -224,42 +233,28 @@ echo ""
 log_info "--- Setting up OSMO API access ---"
 
 # Start port-forward for OSMO API checks
-start_osmo_port_forward "${OSMO_NAMESPACE}" 8080
+if ! start_osmo_api_session "${OSMO_NAMESPACE}" 8080 15; then
+    log_error "Skipping OSMO API checks (3–6). Ensure OSMO is running in namespace '${OSMO_NAMESPACE}'."
+    echo ""
+    echo "========================================"
+    echo "  Verification Summary (partial)"
+    echo "========================================"
+    echo ""
+    echo -e "  ${GREEN}Passed:   ${PASS}${NC}"
+    echo -e "  ${RED}Failed:   ${FAIL}${NC}"
+    echo -e "  ${YELLOW}Warnings: ${WARN}${NC}"
+    echo -e "  Skipped: checks 3–6 (OSMO API unreachable)"
+    echo ""
+    return 0 2>/dev/null || exit 0
+fi
+OSMO_URL="${OSMO_API_URL}"
 
 cleanup_port_forward() {
-    if [[ -n "${PORT_FORWARD_PID:-}" ]]; then
-        kill $PORT_FORWARD_PID 2>/dev/null || true
-        wait $PORT_FORWARD_PID 2>/dev/null || true
-    fi
+    stop_port_forward
 }
 trap cleanup_port_forward EXIT RETURN
 
-# Wait for port-forward
-max_wait=15
-elapsed=0
-while ! curl -s -o /dev/null -w "%{http_code}" "${OSMO_URL}/api/version" 2>/dev/null | grep -q "200\|401\|403"; do
-    sleep 1
-    ((elapsed += 1))
-    if [[ $elapsed -ge $max_wait ]]; then
-        log_error "Port-forward failed to start within ${max_wait}s"
-        log_error "Skipping OSMO API checks (3–6). Ensure OSMO is running in namespace '${OSMO_NAMESPACE}'."
-        cleanup_port_forward
-        # Print partial summary and return
-        echo ""
-        echo "========================================"
-        echo "  Verification Summary (partial)"
-        echo "========================================"
-        echo ""
-        echo -e "  ${GREEN}Passed:   ${PASS}${NC}"
-        echo -e "  ${RED}Failed:   ${FAIL}${NC}"
-        echo -e "  ${YELLOW}Warnings: ${WARN}${NC}"
-        echo -e "  Skipped: checks 3–6 (OSMO API unreachable)"
-        echo ""
-        return 2>/dev/null || true
-    fi
-done
-
-osmo_login 8080 || true
+osmo_login "${OSMO_API_PORT}" || true
 
 # =============================================================================
 # Check 3: Shared memory pod template (64Gi /dev/shm)
@@ -349,20 +344,105 @@ else
 fi
 
 # =============================================================================
-# Check 5: max_num_tasks >= 200
+# Check 5: WORKFLOW config
 # =============================================================================
 echo ""
-log_info "--- Check 5: WORKFLOW max_num_tasks ---"
+log_info "--- Check 5: WORKFLOW config ---"
 
 WORKFLOW_CONFIG=$(osmo_curl GET "${OSMO_URL}/api/configs/workflow" 2>/dev/null || echo "")
 if [[ -n "$WORKFLOW_CONFIG" && "$WORKFLOW_CONFIG" != "null" ]]; then
-    MAX_NUM_TASKS=$(echo "$WORKFLOW_CONFIG" | jq -r '.max_num_tasks // .configs_dict.max_num_tasks // empty' 2>/dev/null || echo "")
+    WORKFLOW_CFG=$(echo "$WORKFLOW_CONFIG" | jq '.configs_dict // .' 2>/dev/null || echo "")
+    EXPECTED_STORAGE_OVERRIDE=""
+
+    if [[ -n "${NEBIUS_REGION:-}" ]]; then
+        EXPECTED_STORAGE_OVERRIDE=$(normalize_nebius_storage_endpoint "https://storage.${NEBIUS_REGION}.nebius.cloud")
+    fi
+
+    MAX_NUM_TASKS=$(echo "$WORKFLOW_CFG" | jq -r '.max_num_tasks // empty' 2>/dev/null || echo "")
     if [[ -z "$MAX_NUM_TASKS" ]]; then
         check_fail "max_num_tasks not set in WORKFLOW config (default is too low)"
     elif [[ "$MAX_NUM_TASKS" -ge "$MIN_MAX_NUM_TASKS" ]] 2>/dev/null; then
         check_pass "max_num_tasks: ${MAX_NUM_TASKS} (>= ${MIN_MAX_NUM_TASKS})"
     else
         check_fail "max_num_tasks: ${MAX_NUM_TASKS} (expected >= ${MIN_MAX_NUM_TASKS})"
+    fi
+
+    for STORAGE_KEY in workflow_data workflow_log; do
+        STORAGE_ENDPOINT=$(echo "$WORKFLOW_CFG" | jq -r --arg key "$STORAGE_KEY" '.[$key].credential.endpoint // empty' 2>/dev/null || echo "")
+        STORAGE_OVERRIDE_URL=$(echo "$WORKFLOW_CFG" | jq -r --arg key "$STORAGE_KEY" '.[$key].credential.override_url // empty' 2>/dev/null || echo "")
+        STORAGE_REGION=$(echo "$WORKFLOW_CFG" | jq -r --arg key "$STORAGE_KEY" '.[$key].credential.region // empty' 2>/dev/null || echo "")
+        STORAGE_ACCESS_KEY_ID=$(echo "$WORKFLOW_CFG" | jq -r --arg key "$STORAGE_KEY" '.[$key].credential.access_key_id // empty' 2>/dev/null || echo "")
+        STORAGE_ACCESS_KEY=$(echo "$WORKFLOW_CFG" | jq -r --arg key "$STORAGE_KEY" '.[$key].credential.access_key // empty' 2>/dev/null || echo "")
+
+        if [[ -z "$STORAGE_ENDPOINT" ]]; then
+            check_fail "${STORAGE_KEY}: credential.endpoint missing"
+        else
+            check_pass "${STORAGE_KEY}: credential.endpoint set"
+        fi
+
+        if [[ -z "$STORAGE_OVERRIDE_URL" ]]; then
+            check_fail "${STORAGE_KEY}: credential.override_url missing (Nebius Object Storage needs the HTTPS endpoint)"
+        elif [[ -n "$EXPECTED_STORAGE_OVERRIDE" && "$STORAGE_OVERRIDE_URL" != "$EXPECTED_STORAGE_OVERRIDE" ]]; then
+            check_fail "${STORAGE_KEY}: credential.override_url=${STORAGE_OVERRIDE_URL} (expected ${EXPECTED_STORAGE_OVERRIDE})"
+        else
+            check_pass "${STORAGE_KEY}: credential.override_url=${STORAGE_OVERRIDE_URL}"
+        fi
+
+        if [[ -z "$STORAGE_REGION" ]]; then
+            check_fail "${STORAGE_KEY}: credential.region missing (workflow uploads will fail with Invalid region)"
+        elif [[ -n "${NEBIUS_REGION:-}" && "$STORAGE_REGION" != "$NEBIUS_REGION" ]]; then
+            check_fail "${STORAGE_KEY}: credential.region=${STORAGE_REGION} (expected ${NEBIUS_REGION})"
+        else
+            check_pass "${STORAGE_KEY}: credential.region=${STORAGE_REGION}"
+        fi
+
+        if [[ -n "$STORAGE_ACCESS_KEY_ID" && -n "$STORAGE_ACCESS_KEY" ]]; then
+            check_pass "${STORAGE_KEY}: inline access keys present"
+        elif [[ -n "$STORAGE_ACCESS_KEY_ID" || -n "$STORAGE_ACCESS_KEY" ]]; then
+            check_fail "${STORAGE_KEY}: inline access keys are only partially configured"
+        else
+            check_warn "${STORAGE_KEY}: inline access keys absent; this only works on OSMO builds that support env-backed workflow credentials"
+        fi
+    done
+
+    for deploy in osmo-service osmo-worker osmo-logger osmo-agent; do
+        DEPLOYMENT_JSON=$(kubectl get deployment "$deploy" -n "${OSMO_NAMESPACE}" -o json 2>/dev/null || echo "")
+        if [[ -z "$DEPLOYMENT_JSON" ]]; then
+            check_fail "Deployment ${deploy} not found"
+            continue
+        fi
+
+        DEPLOY_ENV_NAMES=$(echo "$DEPLOYMENT_JSON" | jq -r '
+            .spec.template.spec.containers[]
+            | select(.name == "'"${deploy}"'")
+            | .env[]?.name
+        ' 2>/dev/null || echo "")
+
+        if echo "$DEPLOY_ENV_NAMES" | grep -qx "AWS_ACCESS_KEY_ID" &&
+           echo "$DEPLOY_ENV_NAMES" | grep -qx "AWS_SECRET_ACCESS_KEY" &&
+           echo "$DEPLOY_ENV_NAMES" | grep -qx "AWS_ENDPOINT_URL_S3" &&
+           echo "$DEPLOY_ENV_NAMES" | grep -qx "AWS_DEFAULT_REGION"; then
+            check_pass "${deploy}: AWS storage env wiring present"
+        else
+            check_fail "${deploy}: missing AWS storage env wiring from osmo-storage"
+        fi
+    done
+
+    VERIFY_BUCKET=$(get_tf_output "storage_bucket.name" "${SCRIPT_DIR}/../001-iac" 2>/dev/null || echo "")
+    VERIFY_ENDPOINT=$(get_tf_output "storage_bucket.endpoint" "${SCRIPT_DIR}/../001-iac" 2>/dev/null || echo "")
+    if [[ -z "$VERIFY_ENDPOINT" && -n "${NEBIUS_REGION:-}" ]]; then
+        VERIFY_ENDPOINT="https://storage.${NEBIUS_REGION}.nebius.cloud"
+    fi
+    if [[ -n "$VERIFY_ENDPOINT" ]]; then
+        VERIFY_ENDPOINT=$(normalize_nebius_storage_endpoint "$VERIFY_ENDPOINT")
+    fi
+
+    if [[ -z "$VERIFY_BUCKET" || -z "$VERIFY_ENDPOINT" || -z "${NEBIUS_REGION:-}" ]]; then
+        check_warn "Skipping live bucket probe (bucket / endpoint / NEBIUS_REGION missing)"
+    elif probe_nebius_bucket_rw "${OSMO_NAMESPACE}" "${VERIFY_BUCKET}" "${VERIFY_ENDPOINT}" "${NEBIUS_REGION}"; then
+        check_pass "osmo-storage secret can read/write ${VERIFY_BUCKET}"
+    else
+        check_fail "osmo-storage secret cannot read/write ${VERIFY_BUCKET}"
     fi
 else
     check_fail "Could not retrieve WORKFLOW config from OSMO API"

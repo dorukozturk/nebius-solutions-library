@@ -31,7 +31,7 @@ enable_public_endpoint = true  # Set false if using WireGuard
 # -----------------------------------------------------------------------------
 cpu_nodes_count            = 3
 cpu_nodes_platform         = "cpu-d3"
-cpu_nodes_preset           = "16vcpu-64gb"
+cpu_nodes_preset           = "32vcpu-128gb"  # Redis requests 8vCPU+52Gi; 16vcpu-64gb leaves the node nearly full
 cpu_disk_size_gib          = 128
 cpu_nodes_assign_public_ip = false  # Private nodes only
 
@@ -64,6 +64,13 @@ postgresql_preset        = "4vcpu-16gb"   # Available presets vary by region
 # postgresql_disk_type   = null           # Auto: network-ssd (eu-north1), nbs-csi-sc (other regions)
 postgresql_disk_size_gib = 50
 postgresql_host_count    = 1
+
+# -----------------------------------------------------------------------------
+# SSH Access
+# -----------------------------------------------------------------------------
+ssh_public_key = {
+  path = "<YOUR_PUBLIC_KEY_PATH>"  # or: key = "ssh-rsa AAAA..."
+}
 
 # -----------------------------------------------------------------------------
 # WireGuard VPN (Optional)

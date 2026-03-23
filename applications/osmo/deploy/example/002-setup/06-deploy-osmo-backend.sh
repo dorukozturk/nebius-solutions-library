@@ -25,9 +25,117 @@ check_helm || exit 1
 # -----------------------------------------------------------------------------
 OSMO_OPERATOR_NAMESPACE="osmo-operator"
 OSMO_WORKFLOWS_NAMESPACE="osmo-workflows"
-OSMO_IMAGE_TAG="${OSMO_IMAGE_TAG:-6.0.0}"
+OSMO_IMAGE_TAG="${OSMO_IMAGE_TAG:-}"
 OSMO_CHART_VERSION="${OSMO_CHART_VERSION:-}"
 BACKEND_NAME="${OSMO_BACKEND_NAME:-default}"
+OSMO_OPERATOR_PASSWORD_SECRET="${OSMO_OPERATOR_PASSWORD_SECRET:-osmo-operator-password}"
+OSMO_OPERATOR_PASSWORD_KEY="${OSMO_OPERATOR_PASSWORD_KEY:-password}"
+OSMO_OPERATOR_USERNAME="${OSMO_OPERATOR_USERNAME:-${OSMO_KC_ADMIN_USER:-osmo-admin}}"
+
+# Detect whether the control plane is running with Keycloak-enabled auth.
+KEYCLOAK_ENABLED="false"
+if [[ "${DEPLOY_KEYCLOAK:-false}" == "true" ]]; then
+    KEYCLOAK_ENABLED="true"
+elif kubectl get svc -n "${OSMO_NAMESPACE:-osmo}" keycloak &>/dev/null; then
+    KEYCLOAK_ENABLED="true"
+fi
+
+# OSMO 6.2 backend-operator defaults to password auth. Token auth from the
+# older script path now produces invalid access tokens against the 6.2 agent.
+BACKEND_LOGIN_METHOD="${OSMO_BACKEND_LOGIN_METHOD:-}"
+if [[ -z "$BACKEND_LOGIN_METHOD" ]]; then
+    if [[ "$KEYCLOAK_ENABLED" == "true" ]]; then
+        BACKEND_LOGIN_METHOD="password"
+    else
+        BACKEND_LOGIN_METHOD="token"
+    fi
+fi
+
+cleanup_port_forwards() {
+    local i
+    for i in "${!PF_PIDS[@]}"; do
+        stop_port_forward "${PF_PIDS[$i]}" "${PF_LOGS[$i]:-}"
+    done
+}
+
+derive_backend_image_tag() {
+    local chart_output=""
+
+    if [[ -n "${OSMO_CHART_VERSION:-}" ]]; then
+        chart_output=$(helm show chart osmo/backend-operator --version "${OSMO_CHART_VERSION}" 2>/dev/null || true)
+    else
+        chart_output=$(helm show chart osmo/backend-operator 2>/dev/null || true)
+    fi
+
+    echo "$chart_output" | awk -F': ' '/^appVersion:/ { gsub(/"/, "", $2); print $2; exit }'
+}
+
+resolve_keycloak_token_url() {
+    KC_INGRESS_HOST=$(kubectl get ingress -n "${OSMO_NAMESPACE:-osmo}" keycloak -o jsonpath='{.spec.rules[0].host}' 2>/dev/null || echo "")
+    KC_CURL_TLS_OPT=""
+
+    if [[ "${OSMO_KC_SKIP_TLS_VERIFY:-false}" == "true" ]]; then
+        KC_CURL_TLS_OPT="-k"
+        log_warning "TLS verification disabled for Keycloak token request (OSMO_KC_SKIP_TLS_VERIFY=true)"
+    elif [[ "${KEYCLOAK_HOSTNAME:-}" == *.local || "${KC_INGRESS_HOST:-}" == *.local ]]; then
+        KC_CURL_TLS_OPT="-k"
+        log_warning "Self-signed cert detected (.local hostname) — skipping TLS verification for Keycloak token request"
+    fi
+
+    if [[ -n "${KEYCLOAK_HOSTNAME:-}" ]]; then
+        KEYCLOAK_TOKEN_URL="https://${KEYCLOAK_HOSTNAME}/realms/osmo/protocol/openid-connect/token"
+        log_info "Keycloak token endpoint (KEYCLOAK_HOSTNAME): ${KEYCLOAK_TOKEN_URL}"
+    elif [[ -n "$KC_INGRESS_HOST" ]]; then
+        KEYCLOAK_TOKEN_URL="https://${KC_INGRESS_HOST}/realms/osmo/protocol/openid-connect/token"
+        log_info "Keycloak token endpoint (ingress): ${KEYCLOAK_TOKEN_URL}"
+    else
+        local kc_pf_port
+
+        kc_pf_port="${KC_PF_PORT:-8082}"
+        log_info "No Keycloak ingress found; starting Keycloak port-forward..."
+        start_kubectl_port_forward "${OSMO_NAMESPACE:-osmo}" svc/keycloak 80 "${kc_pf_port}" "Keycloak" || exit 1
+        PF_PIDS+=("$PORT_FORWARD_PID")
+        PF_LOGS+=("$PORT_FORWARD_LOG")
+        kc_pf_port=$PORT_FORWARD_PORT
+        if ! wait_for_http_ready "http://localhost:${kc_pf_port}/realms/osmo" 15 "Keycloak port-forward"; then
+            log_error "Keycloak port-forward failed to respond in time"
+            exit 1
+        fi
+        KEYCLOAK_TOKEN_URL="http://localhost:${kc_pf_port}/realms/osmo/protocol/openid-connect/token"
+        log_info "Keycloak token endpoint (port-forward): ${KEYCLOAK_TOKEN_URL}"
+    fi
+}
+
+validate_keycloak_operator_user() {
+    local kc_response
+    local kc_error
+
+    if [[ "$KEYCLOAK_ENABLED" != "true" ]]; then
+        log_error "Password auth for the backend operator requires Keycloak-enabled OSMO."
+        log_error "Set OSMO_BACKEND_LOGIN_METHOD=token only for no-auth/dev installs."
+        exit 1
+    fi
+
+    resolve_keycloak_token_url
+
+    log_info "Authenticating backend operator user '${OSMO_OPERATOR_USERNAME}' with Keycloak..."
+    kc_response=$(curl -s ${KC_CURL_TLS_OPT} -X POST "${KEYCLOAK_TOKEN_URL}" \
+        -d "grant_type=password" \
+        -d "client_id=osmo-device" \
+        -d "username=${OSMO_OPERATOR_USERNAME}" \
+        -d "password=${OSMO_OPERATOR_PASSWORD}")
+
+    KC_JWT=$(echo "$kc_response" | jq -r '.access_token // empty' 2>/dev/null || echo "")
+    if [[ -z "$KC_JWT" ]]; then
+        kc_error=$(echo "$kc_response" | jq -r '.error_description // .error // empty' 2>/dev/null || echo "unknown error")
+        log_error "Keycloak authentication failed: $kc_error"
+        log_error "Ensure OSMO_OPERATOR_USERNAME / OSMO_OPERATOR_PASSWORD are valid local Keycloak credentials."
+        log_error "If using Nebius SSO, create a local break-glass user (CREATE_OSMO_TEST_USER=true) or see AUTHENTICATION.md"
+        exit 1
+    fi
+
+    log_success "Keycloak authentication successful for backend operator user '${OSMO_OPERATOR_USERNAME}'"
+}
 
 # Check for OSMO Service URL (in-cluster URL for the backend operator pods)
 # IMPORTANT: Backend operators connect via WebSocket to osmo-agent, NOT osmo-service!
@@ -57,8 +165,26 @@ if [[ -z "${OSMO_SERVICE_URL:-}" ]]; then
     fi
 fi
 
-# Check for OSMO Service Token
-if [[ -z "${OSMO_SERVICE_TOKEN:-}" ]]; then
+# Check backend operator credentials
+if [[ "$BACKEND_LOGIN_METHOD" == "password" ]]; then
+    kubectl create namespace "${OSMO_OPERATOR_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || true
+
+    EXISTING_OPERATOR_PASSWORD=$(kubectl get secret "${OSMO_OPERATOR_PASSWORD_SECRET}" -n "${OSMO_OPERATOR_NAMESPACE}" -o "jsonpath={.data.${OSMO_OPERATOR_PASSWORD_KEY}}" 2>/dev/null | base64 -d || echo "")
+    if [[ -z "${OSMO_OPERATOR_PASSWORD:-}" && -n "$EXISTING_OPERATOR_PASSWORD" ]]; then
+        OSMO_OPERATOR_PASSWORD="$EXISTING_OPERATOR_PASSWORD"
+        log_info "Using existing operator password from secret ${OSMO_OPERATOR_PASSWORD_SECRET}"
+    fi
+    OSMO_OPERATOR_PASSWORD="${OSMO_OPERATOR_PASSWORD:-${OSMO_KC_ADMIN_PASS:-osmo-admin}}"
+
+    PF_PIDS=()
+    PF_LOGS=()
+    trap cleanup_port_forwards EXIT
+    validate_keycloak_operator_user
+    cleanup_port_forwards
+    trap - EXIT
+fi
+
+if [[ "$BACKEND_LOGIN_METHOD" == "token" && -z "${OSMO_SERVICE_TOKEN:-}" ]]; then
     # First, ensure namespace exists so we can check for existing secret
     kubectl create namespace "${OSMO_OPERATOR_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || true
     
@@ -97,23 +223,9 @@ if [[ -z "${OSMO_SERVICE_TOKEN:-}" ]]; then
         TOKEN_NAME="backend-token-$(date -u +%Y%m%d%H%M%S)"
         EXPIRY_DATE=$(date -u -d "+1 year" +%F 2>/dev/null || date -u -v+1y +%F 2>/dev/null || echo "2027-01-01")
 
-        # Cleanup function to kill port-forwards on exit
         PF_PIDS=()
-        cleanup_port_forwards() {
-            for pid in "${PF_PIDS[@]}"; do
-                kill "$pid" 2>/dev/null || true
-                wait "$pid" 2>/dev/null || true
-            done
-        }
+        PF_LOGS=()
         trap cleanup_port_forwards EXIT
-
-        # Detect if Keycloak auth is enabled
-        KEYCLOAK_ENABLED="false"
-        if [[ "${DEPLOY_KEYCLOAK:-false}" == "true" ]]; then
-            KEYCLOAK_ENABLED="true"
-        elif kubectl get svc -n "${OSMO_NAMESPACE:-osmo}" keycloak &>/dev/null; then
-            KEYCLOAK_ENABLED="true"
-        fi
 
         if [[ "$KEYCLOAK_ENABLED" == "true" ]]; then
             # ---------------------------------------------------------------
@@ -121,48 +233,32 @@ if [[ -z "${OSMO_SERVICE_TOKEN:-}" ]]; then
             # then call OSMO REST API with Bearer token
             # ---------------------------------------------------------------
             log_info "Keycloak detected - using password grant for token creation..."
-
-            # Derive Keycloak external URL from the ingress (ensures JWT issuer matches
-            # what Envoy expects -- using port-forward would produce a wrong issuer)
-            KC_INGRESS_HOST=$(kubectl get ingress -n "${OSMO_NAMESPACE:-osmo}" keycloak -o jsonpath='{.spec.rules[0].host}' 2>/dev/null || echo "")
-            if [[ -z "$KC_INGRESS_HOST" ]]; then
-                log_error "Could not detect Keycloak ingress hostname"
-                exit 1
-            fi
-            KEYCLOAK_TOKEN_URL="https://${KC_INGRESS_HOST}/realms/osmo/protocol/openid-connect/token"
-            log_info "Keycloak token endpoint: ${KEYCLOAK_TOKEN_URL}"
+            resolve_keycloak_token_url
 
             # Port-forward to OSMO service (for the token creation API)
             log_info "Starting port-forward to OSMO service..."
-            kubectl port-forward -n "${OSMO_NAMESPACE:-osmo}" svc/osmo-service 8080:80 &>/dev/null &
-            PF_PIDS+=($!)
-
-            # Wait for port-forward to be ready
-            log_info "Waiting for port-forward to be ready..."
-            max_wait=30
-            elapsed=0
-            while true; do
-                SVC_READY=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:8080/api/version" 2>/dev/null || echo "000")
-                if [[ "$SVC_READY" =~ ^(200|401|403)$ ]]; then
-                    break
-                fi
-                sleep 1
-                elapsed=$((elapsed + 1))
-                if [[ $elapsed -ge $max_wait ]]; then
-                    log_error "Port-forward failed to start within ${max_wait}s (service=$SVC_READY)"
-                    exit 1
-                fi
-            done
-            log_success "Port-forward ready"
+            start_kubectl_port_forward "${OSMO_NAMESPACE:-osmo}" svc/osmo-service 80 8080 "OSMO service" || exit 1
+            SVC_PF_PID=$PORT_FORWARD_PID
+            SVC_PF_PORT=$PORT_FORWARD_PORT
+            SVC_PF_LOG=$PORT_FORWARD_LOG
+            PF_PIDS+=("$SVC_PF_PID")
+            PF_LOGS+=("$SVC_PF_LOG")
+            if ! wait_for_http_ready "http://localhost:${SVC_PF_PORT}/api/version" 30 "OSMO API"; then
+                log_error "Port-forward failed to start within 30s"
+                exit 1
+            fi
+            log_success "Port-forward ready at http://localhost:${SVC_PF_PORT}"
 
             # Get Keycloak JWT via Resource Owner Password Grant
             # Uses osmo-device client (public, directAccessGrantsEnabled=true)
             # MUST use external Keycloak URL so the JWT issuer matches what Envoy expects
-            KC_ADMIN_USER="${OSMO_KC_ADMIN_USER:-osmo-admin}"
-            KC_ADMIN_PASS="${OSMO_KC_ADMIN_PASS:-osmo-admin}"
+            KC_ADMIN_USER="${OSMO_OPERATOR_USERNAME}"
+            KC_ADMIN_PASS="${OSMO_OPERATOR_PASSWORD:-${OSMO_KC_ADMIN_PASS:-osmo-admin}}"
+            # When Nebius SSO is primary, the default osmo-admin user is not created; set CREATE_OSMO_TEST_USER=true
+            # in 04-deploy-osmo-control-plane.sh or set OSMO_KC_ADMIN_USER/OSMO_KC_ADMIN_PASS to a valid local user.
 
             log_info "Authenticating with Keycloak as '${KC_ADMIN_USER}'..."
-            KC_RESPONSE=$(curl -s -X POST "${KEYCLOAK_TOKEN_URL}" \
+            KC_RESPONSE=$(curl -s ${KC_CURL_TLS_OPT} -X POST "${KEYCLOAK_TOKEN_URL}" \
                 -d "grant_type=password" \
                 -d "client_id=osmo-device" \
                 -d "username=${KC_ADMIN_USER}" \
@@ -172,7 +268,7 @@ if [[ -z "${OSMO_SERVICE_TOKEN:-}" ]]; then
             if [[ -z "$KC_JWT" ]]; then
                 KC_ERROR=$(echo "$KC_RESPONSE" | jq -r '.error_description // .error // empty' 2>/dev/null || echo "unknown error")
                 log_error "Keycloak authentication failed: $KC_ERROR"
-                log_error "Ensure OSMO_KC_ADMIN_USER and OSMO_KC_ADMIN_PASS are set, or that osmo-admin/osmo-admin is valid"
+                log_error "Ensure OSMO_KC_ADMIN_USER and OSMO_KC_ADMIN_PASS are set. If using Nebius SSO, create a local user (e.g. CREATE_OSMO_TEST_USER=true) or see AUTHENTICATION.md"
                 exit 1
             fi
             log_success "Keycloak authentication successful"
@@ -187,7 +283,7 @@ if [[ -z "${OSMO_SERVICE_TOKEN:-}" ]]; then
             #      so it expects the raw JWT directly.
             log_info "Creating service token: $TOKEN_NAME (expires: $EXPIRY_DATE)..."
             TOKEN_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
-                "http://localhost:8080/api/auth/access_token/service/${TOKEN_NAME}?expires_at=${EXPIRY_DATE}&roles=osmo-backend" \
+                "http://localhost:${SVC_PF_PORT}/api/auth/access_token/service/${TOKEN_NAME}?expires_at=${EXPIRY_DATE}&roles=osmo-backend" \
                 -H "x-osmo-auth: ${KC_JWT}" \
                 -H "Content-Type: application/json")
 
@@ -220,26 +316,21 @@ if [[ -z "${OSMO_SERVICE_TOKEN:-}" ]]; then
 
             # Start port-forward in background
             log_info "Starting port-forward to OSMO service..."
-            kubectl port-forward -n "${OSMO_NAMESPACE:-osmo}" svc/osmo-service 8080:80 &>/dev/null &
-            PF_PIDS+=($!)
-
-            # Wait for port-forward to be ready
-            log_info "Waiting for port-forward to be ready..."
-            max_wait=30
-            elapsed=0
-            while ! curl -s -o /dev/null -w "%{http_code}" "http://localhost:8080/api/version" 2>/dev/null | grep -q "200\|401\|403"; do
-                sleep 1
-                elapsed=$((elapsed + 1))
-                if [[ $elapsed -ge $max_wait ]]; then
-                    log_error "Port-forward failed to start within ${max_wait}s"
-                    exit 1
-                fi
-            done
-            log_success "Port-forward ready"
+            start_kubectl_port_forward "${OSMO_NAMESPACE:-osmo}" svc/osmo-service 80 8080 "OSMO service" || exit 1
+            SVC_PF_PID=$PORT_FORWARD_PID
+            SVC_PF_PORT=$PORT_FORWARD_PORT
+            SVC_PF_LOG=$PORT_FORWARD_LOG
+            PF_PIDS+=("$SVC_PF_PID")
+            PF_LOGS+=("$SVC_PF_LOG")
+            if ! wait_for_http_ready "http://localhost:${SVC_PF_PORT}/api/version" 30 "OSMO API"; then
+                log_error "Port-forward failed to start within 30s"
+                exit 1
+            fi
+            log_success "Port-forward ready at http://localhost:${SVC_PF_PORT}"
 
             # Login with dev method (auth is disabled)
             log_info "Logging in to OSMO (dev method)..."
-            if ! osmo login http://localhost:8080 --method dev --username admin 2>/dev/null; then
+            if ! osmo login "http://localhost:${SVC_PF_PORT}" --method dev --username admin 2>/dev/null; then
                 log_error "Failed to login to OSMO. If Keycloak is enabled, set DEPLOY_KEYCLOAK=true"
                 exit 1
             fi
@@ -277,6 +368,12 @@ log_info "Adding OSMO Helm repository..."
 helm repo add osmo https://helm.ngc.nvidia.com/nvidia/osmo --force-update
 helm repo update
 
+if [[ -z "$OSMO_IMAGE_TAG" ]]; then
+    OSMO_IMAGE_TAG=$(derive_backend_image_tag)
+    OSMO_IMAGE_TAG="${OSMO_IMAGE_TAG:-6.2}"
+    log_info "Using backend image tag: ${OSMO_IMAGE_TAG}"
+fi
+
 # -----------------------------------------------------------------------------
 # Create Namespaces
 # -----------------------------------------------------------------------------
@@ -287,11 +384,19 @@ kubectl create namespace "${OSMO_WORKFLOWS_NAMESPACE}" --dry-run=client -o yaml 
 # -----------------------------------------------------------------------------
 # Create Secrets
 # -----------------------------------------------------------------------------
-log_info "Creating operator token secret..."
-kubectl create secret generic osmo-operator-token \
-    --namespace "${OSMO_OPERATOR_NAMESPACE}" \
-    --from-literal=token="${OSMO_SERVICE_TOKEN}" \
-    --dry-run=client -o yaml | kubectl apply -f -
+if [[ "$BACKEND_LOGIN_METHOD" == "password" ]]; then
+    log_info "Creating operator password secret..."
+    kubectl create secret generic "${OSMO_OPERATOR_PASSWORD_SECRET}" \
+        --namespace "${OSMO_OPERATOR_NAMESPACE}" \
+        --from-literal="${OSMO_OPERATOR_PASSWORD_KEY}=${OSMO_OPERATOR_PASSWORD}" \
+        --dry-run=client -o yaml | kubectl apply -f -
+else
+    log_info "Creating operator token secret..."
+    kubectl create secret generic osmo-operator-token \
+        --namespace "${OSMO_OPERATOR_NAMESPACE}" \
+        --from-literal=token="${OSMO_SERVICE_TOKEN}" \
+        --dry-run=client -o yaml | kubectl apply -f -
+fi
 
 # -----------------------------------------------------------------------------
 # Create Values File
@@ -307,10 +412,20 @@ global:
   agentNamespace: "${OSMO_OPERATOR_NAMESPACE}"
   backendNamespace: "${OSMO_WORKFLOWS_NAMESPACE}"
   backendName: "${BACKEND_NAME}"
+$(if [[ "$BACKEND_LOGIN_METHOD" == "password" ]]; then
+cat <<AUTH_BLOCK
+  accountUsername: "${OSMO_OPERATOR_USERNAME}"
+  accountPasswordSecret: "${OSMO_OPERATOR_PASSWORD_SECRET}"
+  accountPasswordSecretKey: "${OSMO_OPERATOR_PASSWORD_KEY}"
+  loginMethod: password
+AUTH_BLOCK
+else
+cat <<AUTH_BLOCK
   accountTokenSecret: osmo-operator-token
   accountTokenSecretKey: token
   loginMethod: token
-  
+AUTH_BLOCK
+fi)
   # Node selector to prefer system/CPU nodes (not GPU nodes)
   nodeSelector:
     kubernetes.io/os: linux

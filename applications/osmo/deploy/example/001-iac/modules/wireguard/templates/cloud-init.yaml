@@ -3,8 +3,10 @@ users:
   - name: ${ssh_user_name}
     sudo: ALL=(ALL) NOPASSWD:ALL
     shell: /bin/bash
+%{ if ssh_public_key != null && ssh_public_key != "" ~}
     ssh_authorized_keys:
       - ${ssh_public_key}
+%{ endif ~}
 
 package_update: true
 package_upgrade: true

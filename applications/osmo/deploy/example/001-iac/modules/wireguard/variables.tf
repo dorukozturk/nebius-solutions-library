@@ -51,7 +51,7 @@ variable "platform" {
 variable "preset" {
   description = "VM resource preset"
   type        = string
-  default     = "2vcpu-8gb"
+  default     = "4vcpu-16gb"
 }
 
 variable "disk_size_gib" {

@@ -13,8 +13,8 @@ services:
     port: 5432
     db: osmo
     user: osmo_admin
-    passwordSecretName: postgres-secret
-    passwordSecretKey: password
+    passwordSecretName: db-secret
+    passwordSecretKey: db-password
   
   redis:
     enabled: false
@@ -42,8 +42,8 @@ services:
       - name: OSMO_POSTGRES_PASSWORD
         valueFrom:
           secretKeyRef:
-            name: postgres-secret
-            key: password
+            name: db-secret
+            key: db-password
     extraVolumes:
       - name: vault-secrets
         secret:
@@ -69,8 +69,8 @@ services:
       - name: OSMO_POSTGRES_PASSWORD
         valueFrom:
           secretKeyRef:
-            name: postgres-secret
-            key: password
+            name: db-secret
+            key: db-password
     extraVolumes:
       - name: vault-secrets
         secret:
@@ -96,8 +96,8 @@ services:
       - name: OSMO_POSTGRES_PASSWORD
         valueFrom:
           secretKeyRef:
-            name: postgres-secret
-            key: password
+            name: db-secret
+            key: db-password
     extraVolumes:
       - name: vault-secrets
         secret:
@@ -123,8 +123,8 @@ services:
       - name: OSMO_POSTGRES_PASSWORD
         valueFrom:
           secretKeyRef:
-            name: postgres-secret
-            key: password
+            name: db-secret
+            key: db-password
     extraVolumes:
       - name: vault-secrets
         secret:
@@ -148,8 +148,8 @@ services:
       - name: OSMO_POSTGRES_PASSWORD
         valueFrom:
           secretKeyRef:
-            name: postgres-secret
-            key: password
+            name: db-secret
+            key: db-password
     extraVolumes:
       - name: vault-secrets
         secret:
