@@ -295,7 +295,8 @@ slurm_nodeset_controller = {
 # Configuration of Slurm Worker node sets.
 # Multiple worker nodesets are supported with different hardware configurations.
 # Each nodeset will be automatically split into node groups of max 100 nodes with autoscaling enabled.
-# infiniband_fabric is required field for GPU clusters
+# Only full-host 8-GPU presets are supported for GPU worker nodes.
+# gpu_cluster.infiniband_fabric is required for supported GPU presets.
 # ---
 slurm_nodeset_workers = [
   {

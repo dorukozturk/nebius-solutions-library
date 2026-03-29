@@ -15,9 +15,6 @@ locals {
     p-224c-896g  = "224vcpu-896gb"
     p-256c-1024g = "256vcpu-1024gb"
 
-    p-1g-16c-200g   = "1gpu-16vcpu-200gb"
-    p-1g-20c-224g   = "1gpu-20vcpu-224gb"
-    p-1g-24c-346g   = "1gpu-24vcpu-346gb"
     p-8g-128c-1600g = "8gpu-128vcpu-1600gb"
     p-8g-160c-1792g = "8gpu-160vcpu-1792gb"
     p-8g-192c-2768g = "8gpu-192vcpu-2768gb"
@@ -223,20 +220,6 @@ locals {
   }
 
   presets_gpu = {
-    g-1gpu-16vcpu-200gb = {
-      cpu_cores              = 16 * local.reserve.cpu.coefficient - local.reserve.cpu.count
-      memory_gibibytes       = 200 * local.reserve.ram.coefficient - local.reserve.ram.count
-      gpus                   = 1
-      gpu_cluster_compatible = false
-      sufficient = {
-        (module.labels.name_nodeset_system)     = true
-        (module.labels.name_nodeset_controller) = true
-        (module.labels.name_nodeset_worker)     = true
-        (module.labels.name_nodeset_login)      = true
-        (module.labels.name_nodeset_accounting) = true
-        (module.labels.name_nodeset_nfs)        = true
-      }
-    }
     g-8gpu-128vcpu-1600gb = {
       cpu_cores              = 128 * local.reserve.cpu.coefficient - local.reserve.cpu.count
       memory_gibibytes       = 1600 * local.reserve.ram.coefficient - local.reserve.ram.count
@@ -251,39 +234,11 @@ locals {
         (module.labels.name_nodeset_nfs)        = true
       }
     }
-    g-1gpu-20vcpu-224gb = {
-      cpu_cores              = 20 * local.reserve.cpu.coefficient - local.reserve.cpu.count
-      memory_gibibytes       = 224 * local.reserve.ram.coefficient - local.reserve.ram.count
-      gpus                   = 1
-      gpu_cluster_compatible = false
-      sufficient = {
-        (module.labels.name_nodeset_system)     = true
-        (module.labels.name_nodeset_controller) = true
-        (module.labels.name_nodeset_worker)     = true
-        (module.labels.name_nodeset_login)      = true
-        (module.labels.name_nodeset_accounting) = true
-        (module.labels.name_nodeset_nfs)        = true
-      }
-    }
     g-8gpu-160vcpu-1792gb = {
       cpu_cores              = 160 * local.reserve.cpu.coefficient - local.reserve.cpu.count
       memory_gibibytes       = 1792 * local.reserve.ram.coefficient - local.reserve.ram.count
       gpus                   = 8
       gpu_cluster_compatible = true
-      sufficient = {
-        (module.labels.name_nodeset_system)     = true
-        (module.labels.name_nodeset_controller) = true
-        (module.labels.name_nodeset_worker)     = true
-        (module.labels.name_nodeset_login)      = true
-        (module.labels.name_nodeset_accounting) = true
-        (module.labels.name_nodeset_nfs)        = true
-      }
-    }
-    g-1gpu-24vcpu-346gb = {
-      cpu_cores              = 24 * local.reserve.cpu.coefficient - local.reserve.cpu.count
-      memory_gibibytes       = 346 * local.reserve.ram.coefficient - local.reserve.ram.count
-      gpus                   = 1
-      gpu_cluster_compatible = false
       sufficient = {
         (module.labels.name_nodeset_system)     = true
         (module.labels.name_nodeset_controller) = true
@@ -346,27 +301,22 @@ locals {
     })
 
     (local.platforms.gpu-h100-sxm) = tomap({
-      (local.presets.p-1g-16c-200g)   = local.presets_gpu.g-1gpu-16vcpu-200gb
       (local.presets.p-8g-128c-1600g) = local.presets_gpu.g-8gpu-128vcpu-1600gb
     })
 
     (local.platforms.gpu-h200-sxm) = tomap({
-      (local.presets.p-1g-16c-200g)   = local.presets_gpu.g-1gpu-16vcpu-200gb
       (local.presets.p-8g-128c-1600g) = local.presets_gpu.g-8gpu-128vcpu-1600gb
     })
 
     (local.platforms.gpu-b200-sxm) = tomap({
-      (local.presets.p-1g-20c-224g)   = local.presets_gpu.g-1gpu-20vcpu-224gb
       (local.presets.p-8g-160c-1792g) = local.presets_gpu.g-8gpu-160vcpu-1792gb
     })
 
     (local.platforms.gpu-b200-sxm-a) = tomap({
-      (local.presets.p-1g-20c-224g)   = local.presets_gpu.g-1gpu-20vcpu-224gb
       (local.presets.p-8g-160c-1792g) = local.presets_gpu.g-8gpu-160vcpu-1792gb
     })
 
     (local.platforms.gpu-b300-sxm) = tomap({
-      (local.presets.p-1g-24c-346g)   = local.presets_gpu.g-1gpu-24vcpu-346gb
       (local.presets.p-8g-192c-2768g) = local.presets_gpu.g-8gpu-192vcpu-2768gb
     })
   })

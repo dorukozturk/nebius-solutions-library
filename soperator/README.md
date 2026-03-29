@@ -141,6 +141,7 @@ You probably don't need this unless you want to manage the K8S cluster manually.
 
 > [!NOTE] 
 > - For large clusters: Use larger presets for CPU-only nodes
+> - Single-GPU worker presets are not supported. Use full-host 8-GPU presets for GPU workers.
 > - Adjust storage sizes based on your needs
 > - Contact support to increase quotas if needed
 > - Ensure SSH keys are added to the correct location
