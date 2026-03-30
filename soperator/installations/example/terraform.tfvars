@@ -197,7 +197,7 @@ slurm_nodesets_partitions = [
     name         = "main"
     is_all       = true
     nodeset_refs = [] # e.g. ["worker"], but is_all must be false in this case
-    config       = "Default=YES PriorityTier=10 MaxTime=INFINITE State=UP OverSubscribe=YES"
+    config       = "Default=YES PriorityTier=10 PreemptMode=OFF MaxTime=INFINITE State=UP OverSubscribe=YES"
   },
   {
     name         = "hidden"
