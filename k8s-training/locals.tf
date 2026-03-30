@@ -79,7 +79,7 @@ locals {
     "gpu-b200-sxm"   = ["all-disabled", "all-enabled", "all-balanced", "all-1g.23gb", "all-1g.23gb.me", "all-1g.45gb", "all-2g.45gb", "all-3g.90gb", "all-4g.90gb", "all-7g.180gb"]
     "gpu-b200-sxm-a" = ["all-disabled", "all-enabled", "all-balanced", "all-1g.23gb", "all-1g.23gb.me", "all-1g.45gb", "all-2g.45gb", "all-3g.90gb", "all-4g.90gb", "all-7g.180gb"]
     "gpu-b300-sxm"   = ["all-disabled", "all-enabled", "all-balanced", "all-1g.23gb", "all-1g.23gb.me", "all-1g.45gb", "all-2g.45gb", "all-3g.90gb", "all-4g.90gb", "all-7g.180gb"]
-    "gpu-rtx6000"    = ["all-disabled", "all-enabled", "all-balanced", "all-1g.24gb", "all-1g.24gb.me", "all-1g.48gb", "all-2g.85gb", "all-4g.96gb"]
+    "gpu-rtx6000"    = ["all-disabled", "all-enabled", "all-balanced", "all-1g.24gb", "all-1g.24gb.me", "all-1g.48gb", "all-2g.48gb", "all-4g.96gb"]
   }
 }
 
