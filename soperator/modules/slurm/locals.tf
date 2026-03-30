@@ -163,7 +163,7 @@ locals {
     }
   }
 
-  slurm_node_extra = "\\\"{ \\\\\\\"ib_pod\\\\\\\": \\\\\\\"$TOPO_SWITCH_TIER2\\\\\\\" }\\\""
+  slurm_node_extra = "\\\"{ \\\\\\\"ib_pod\\\\\\\": \\\\\\\"$TOPO_SWITCH_TIER2\\\\\\\", \\\\\\\"ib_su\\\\\\\": \\\\\\\"$TOPO_SWITCH_TIER1\\\\\\\" }\\\""
 
   # Calculate vmagent remote write queue count based on cluster size
   # This sets metrics ingestion capacity for larger clusters properly
