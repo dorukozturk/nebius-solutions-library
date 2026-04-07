@@ -499,14 +499,3 @@ variable "gpu_health_cheker" {
   type        = bool
   default     = true
 }
-variable "custom_driver" {
-  description = "Use customized driver for the GPU Operator, e.g. to run Cuda 13 on H200"
-  type        = bool
-  default     = false
-
-  validation {
-    condition     = !(var.custom_driver && var.gpu_nodes_driverfull_image)
-    error_message = "You cannot enable both 'custom_driver' and 'gpu_nodes_driverfull_image' at the same time."
-  }
-
-}

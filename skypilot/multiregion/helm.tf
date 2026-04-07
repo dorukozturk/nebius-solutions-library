@@ -9,7 +9,7 @@ module "network-operator" {
 }
 
 module "gpu-operator" {
-  count = (!var.gpu_nodes_driverfull_image && !var.custom_driver) ? 1 : 0
+  count = !var.gpu_nodes_driverfull_image ? 1 : 0
 
   depends_on = [
     module.network-operator
@@ -18,15 +18,6 @@ module "gpu-operator" {
   parent_id    = local.primary_parent_id
   cluster_id   = nebius_mk8s_v1_cluster.k8s-cluster[local.primary-cluster-key].id
   mig_strategy = var.mig_strategy
-}
-
-module "gpu-operator-custom" {
-  count = var.custom_driver ? 1 : 0
-  depends_on = [
-    module.network-operator
-  ]
-  source       = "../../modules/gpu-operator-custom"
-  mig_strategy = var.mig_strategy != null ? var.mig_strategy : "none"
 }
 
 
