@@ -16,7 +16,6 @@ envs:
   MODEL_ID: meta-llama/Llama-2-7b-hf
   TENSOR_PARALLEL_SIZE: 1
   MAX_MODEL_LEN: 4096
-  S3_ENDPOINT: https://storage.eu-west-1.nebius.cloud
 
 
 setup: |
