@@ -304,6 +304,12 @@ module "slurm" {
     module.o11y,
     module.fluxcd,
     module.backups,
+    # Forces destroy order slurm -> backups_store.cleanup_bucket -> bucket, so
+    # Slurm backup workloads stop writing before the bucket is emptied. Without
+    # this the cleanup ran in parallel with Slurm teardown and restic kept
+    # writing to the bucket during aws s3 rm, causing BucketNotEmpty. See
+    # SCHED-1401.
+    module.backups_store,
   ]
 
   source = "../../modules/slurm"
