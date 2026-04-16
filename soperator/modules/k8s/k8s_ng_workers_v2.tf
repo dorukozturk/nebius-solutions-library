@@ -92,6 +92,16 @@ resource "nebius_mk8s_v1_node_group" "worker_v2" {
     ]
   }
 
+  strategy = {
+    max_unavailable = {
+      percent = 50
+    }
+    max_surge = {
+      percent = 0
+    }
+    drain_timeout = null
+  }
+
   template = {
     metadata = {
       labels = merge(
