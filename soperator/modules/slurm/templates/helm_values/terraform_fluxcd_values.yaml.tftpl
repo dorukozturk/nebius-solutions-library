@@ -70,8 +70,6 @@ resources:
               %{~ if opentelemetry_collector_version != "" ~}
               version: ${opentelemetry_collector_version}
               %{~ endif ~}
-              interval: 5m
-              timeout: 5m
               values:
                 resources:
                   requests:
