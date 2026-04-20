@@ -754,7 +754,7 @@ variable "slurm_nodeset_workers" {
         worker.node_local_image_disk.spec.filesystem_type
       ))
     ])
-    error_message = "slurm_nodeset_workers.node_local_image_disk.filesystem_type must be one of `ext4` or `xfs`."
+    error_message = "slurm_nodeset_workers.node_local_image_disk.spec.filesystem_type must be one of `ext4` or `xfs`."
   }
   validation {
     condition = alltrue([
