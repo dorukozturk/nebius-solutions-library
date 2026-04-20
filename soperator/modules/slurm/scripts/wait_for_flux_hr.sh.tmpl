@@ -26,17 +26,21 @@ get_elapsed_time() {
 get_state_summary() {
   local ready_reason=$(echo "$HR_JSON" | jq -r '.status.conditions[]? | select(.type=="Ready") | .reason' 2>/dev/null)
   local released_reason=$(echo "$HR_JSON" | jq -r '.status.conditions[]? | select(.type=="Released") | .reason' 2>/dev/null)
+  local reconciling_status=$(echo "$HR_JSON" | jq -r '.status.conditions[]? | select(.type=="Reconciling") | .status' 2>/dev/null)
+  local reconciling_reason=$(echo "$HR_JSON" | jq -r '.status.conditions[]? | select(.type=="Reconciling") | .reason' 2>/dev/null)
 
   if [ -z "$ready_reason" ]; then
     ready_reason="Unknown"
   fi
 
-  # Only show Released status if it has a meaningful value
+  local summary="Ready=$ready_reason"
   if [ -n "$released_reason" ]; then
-    echo "Ready=$ready_reason, Released=$released_reason"
-  else
-    echo "Ready=$ready_reason"
+    summary="$summary, Released=$released_reason"
   fi
+  if [ "$reconciling_status" = "True" ] && [ -n "$reconciling_reason" ]; then
+    summary="$summary, Reconciling=$reconciling_reason"
+  fi
+  echo "$summary"
 }
 
 # Print detailed HelmRelease status
@@ -107,10 +111,18 @@ check_hr_failure() {
   local released_message=$(echo "$HR_JSON" | jq -r '.status.conditions[]? | select(.type=="Released") | .message' 2>/dev/null)
   local ready_reason=$(echo "$HR_JSON" | jq -r '.status.conditions[]? | select(.type=="Ready") | .reason' 2>/dev/null)
   local ready_message=$(echo "$HR_JSON" | jq -r '.status.conditions[]? | select(.type=="Ready") | .message' 2>/dev/null)
+  local reconciling_status=$(echo "$HR_JSON" | jq -r '.status.conditions[]? | select(.type=="Reconciling") | .status' 2>/dev/null)
 
   # Check for Released condition failure reasons
   case "$released_reason" in
     InstallFailed|UpgradeFailed|GetLastReleaseFailed|ReconcileStrategyFailed)
+      # Install/upgrade failures are stale while Flux is still reconciling;
+      # retry exhaustion removes the Reconciling condition and falls through.
+      case "$released_reason" in
+        InstallFailed|UpgradeFailed)
+          [ "$reconciling_status" = "True" ] && return 1
+          ;;
+      esac
       echo ""
       echo "ERROR: HelmRelease $HELMRELEASE_NAME has failed!"
       echo "Reason: $released_reason"
