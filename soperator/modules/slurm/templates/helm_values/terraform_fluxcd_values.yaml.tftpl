@@ -424,13 +424,6 @@ resources:
                 name: nvidia-driver-root
               %{~ endif ~}
 
-              %{~ if slurm_cluster.node_local_image_storage.enabled ~}
-              - name: image-storage
-                configMap:
-                  name: image-storage
-                  defaultMode: 500
-              %{~ endif ~}
-
               %{~ if dcgm_job_mapping_enabled ~}
               - name: hpc-jobs-dir
                 hostPath:
