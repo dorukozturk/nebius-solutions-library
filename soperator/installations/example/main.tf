@@ -410,22 +410,6 @@ module "slurm" {
       device         = module.filestore.accounting.mount_tag
     } : null
   }
-  node_local_jail_submounts = [for sm in var.node_local_jail_submounts : {
-    name               = sm.name
-    mount_path         = sm.mount_path
-    size_gibibytes     = sm.size_gibibytes
-    disk_type          = sm.disk_type
-    filesystem_type    = sm.filesystem_type
-    storage_class_name = replace("${local.storage_class_prefix}-${lower(sm.disk_type)}-${lower(sm.filesystem_type)}", "_", "-")
-  }]
-  node_local_image_storage = {
-    enabled = var.node_local_image_disk.enabled
-    spec = var.node_local_image_disk.enabled ? {
-      size_gibibytes     = var.node_local_image_disk.spec.size_gibibytes
-      filesystem_type    = var.node_local_image_disk.spec.filesystem_type
-      storage_class_name = replace("${local.storage_class_prefix}-${lower(var.node_local_image_disk.spec.disk_type)}-${lower(var.node_local_image_disk.spec.filesystem_type)}", "_", "-")
-    } : null
-  }
   nfs = {
     enabled    = var.nfs.enabled
     path       = var.nfs.enabled ? module.nfs-server[0].nfs_export_path : null
@@ -495,6 +479,22 @@ module "slurm" {
       enabled         = try(nodeset.local_nvme.enabled, false)
       mount_path      = try(nodeset.local_nvme.mount_path, "/mnt/local-nvme")
       filesystem_type = try(nodeset.local_nvme.filesystem_type, "ext4")
+    }
+    node_local_jail_submounts = [for sm in nodeset.node_local_jail_submounts : {
+      name               = sm.name
+      mount_path         = sm.mount_path
+      size_gibibytes     = sm.size_gibibytes
+      disk_type          = sm.disk_type
+      filesystem_type    = sm.filesystem_type
+      storage_class_name = replace("${local.storage_class_prefix}-${lower(sm.disk_type)}-${lower(sm.filesystem_type)}", "_", "-")
+    }]
+    node_local_image_storage = {
+      enabled = nodeset.node_local_image_disk.enabled
+      spec = nodeset.node_local_image_disk.enabled ? {
+        size_gibibytes     = nodeset.node_local_image_disk.spec.size_gibibytes
+        filesystem_type    = nodeset.node_local_image_disk.spec.filesystem_type
+        storage_class_name = replace("${local.storage_class_prefix}-${lower(nodeset.node_local_image_disk.spec.disk_type)}-${lower(nodeset.node_local_image_disk.spec.filesystem_type)}", "_", "-")
+      } : null
     }
   }]
 

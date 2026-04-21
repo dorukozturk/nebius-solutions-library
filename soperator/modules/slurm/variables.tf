@@ -270,36 +270,6 @@ variable "controller_state_on_filestore" {
   default     = false
 }
 
-variable "node_local_jail_submounts" {
-  description = "Node-local disks to be mounted inside jail."
-  type = list(object({
-    name               = string
-    mount_path         = string
-    size_gibibytes     = number
-    disk_type          = string
-    filesystem_type    = string
-    storage_class_name = string
-  }))
-  nullable = false
-  default  = []
-}
-
-variable "node_local_image_storage" {
-  description = "Node-local disk to store Docker/Enroot data."
-  type = object({
-    enabled = bool
-    spec = optional(object({
-      size_gibibytes     = number
-      filesystem_type    = string
-      storage_class_name = string
-    }))
-  })
-  nullable = false
-  default = {
-    enabled = false
-  }
-}
-
 # endregion Disks
 
 # region nfs-server
@@ -777,6 +747,22 @@ variable "worker_nodesets" {
       mount_path      = optional(string, "/mnt/local-nvme")
       filesystem_type = optional(string, "ext4")
     }), {})
+    node_local_image_storage = object({
+      enabled = bool
+      spec = optional(object({
+        size_gibibytes     = number
+        filesystem_type    = string
+        storage_class_name = string
+      }))
+    })
+    node_local_jail_submounts = list(object({
+      name               = string
+      mount_path         = string
+      size_gibibytes     = number
+      disk_type          = string
+      filesystem_type    = string
+      storage_class_name = string
+    }))
   }))
   default = []
 }
