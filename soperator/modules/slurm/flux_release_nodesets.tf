@@ -37,10 +37,6 @@ resource "local_file" "flux_release_rendered_nodesets" {
         name       = submount.name
         mount_path = submount.mount_path
       }]
-
-      local = var.node_local_jail_submounts
-
-      image_storage = var.node_local_image_storage
     }
 
     gpu = {
